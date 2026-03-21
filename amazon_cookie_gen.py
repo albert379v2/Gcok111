@@ -890,7 +890,7 @@ async def create_amazon_account(country_code, add_address_flag=True):
                 'JP': 'JP',
                 'AU': 'AU',
                 'IN': 'IN',
-                'ID': '62',
+                'ID': 'ID',
             }
             
             target_country = purchase_country  
