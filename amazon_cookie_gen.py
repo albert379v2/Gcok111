@@ -307,6 +307,7 @@ FIVESIM_COUNTRY_MAP = {
     'JP': 'japan',
     'AU': 'australia',
     'IN': 'india',
+    'ID': 'indonesia',
 }
 
 async def get_fivesim_number(country_code, product='amazon'):
@@ -456,13 +457,6 @@ ACCOUNT_TO_PURCHASE_COUNTRY = {
 }
     
 
-FIVESIM_COUNTRY_MAP = {
-    # ... existentes ...
-    'ID': 'indonesia',  # Agregar Indonesia
-}
-
-
-
 async def get_phone_number(account_country):
     # Determinar qué país usar para la compra
     purchase_country = ACCOUNT_TO_PURCHASE_COUNTRY.get(account_country, account_country)
@@ -475,7 +469,7 @@ async def get_phone_number(account_country):
         try:
             if service['name'] == 'hero':
                 # Hero requiere código numérico
-                hero_country_map = {'MX': 54, 'US': 187, 'CA': 36, 'UK': 16, 'DE': 43, 'FR': 78, 'IT': 86, 'ES': 56, 'JP': 182, 'AU': 175, 'IN': 22}
+                hero_country_map = {'MX': 54, 'US': 187, 'CA': 36, 'UK': 16, 'DE': 43, 'FR': 78, 'IT': 86, 'ES': 56, 'JP': 182, 'AU': 175, 'IN': 22, 'ID': 6}
                 # Necesitamos mapear purchase_country (ISO) a código numérico
                 purchase_country_num = hero_country_map.get(purchase_country)
                 if not purchase_country_num:
@@ -486,7 +480,7 @@ async def get_phone_number(account_country):
                     phone_full, service_id = result
                     # Quitar código de país según el país de compra (Hero devuelve con código)
                     # Usamos el mapeo de prefijos para el país de compra
-                    prefix_len = {'MX': 2, 'US': 1, 'CA': 1, 'UK': 2, 'DE': 2, 'FR': 2, 'IT': 2, 'ES': 2, 'JP': 2, 'AU': 2, 'IN': 2}.get(purchase_country, 0)
+                    prefix_len = {'MX': 2, 'US': 1, 'CA': 1, 'UK': 2, 'DE': 2, 'FR': 2, 'IT': 2, 'ES': 2, 'JP': 2, 'AU': 2, 'IN': 2, 'ID': 2}.get(purchase_country, 0)
                     if prefix_len and len(phone_full) > prefix_len:
                         phone_local = phone_full[prefix_len:]
                         phone_local = re.sub(r'\D', '', phone_local)
