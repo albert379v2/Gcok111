@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
 """
-Amazon Cookie Generator - Versión API REST mejorada
-- Incorpora sistema de SMS con fallback (Hero y 5sim)
-- Captchas resueltos por HTTP directo (sin librerías problemáticas)
-- Reintentos globales, detección de números registrados
-- Selectores precisos para agregar dirección
-- Logs detallados y capturas en base64
+Amazon Cookie Generator - Versión API REST optimizada para velocidad
+- Playwright con tiempos de espera dinámicos y controlables
+- Logs detallados con tiempos de cada acción
+- Reintentos globales con backoff
+- Soporte para múltiples servicios SMS y captchas
 """
 
 import os
@@ -29,12 +28,12 @@ from playwright.async_api import async_playwright
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 
-# Forzar UTF-8 en la salida (útil para entornos Windows, en Northflank no estorba)
+# Forzar UTF-8 en la salida
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
 sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
 
 # -------------------------------------------------------------------
-# CONFIGURACIÓN DESDE VARIABLES DE ENTORNO
+# CONFIGURACIÓN DESDE VARIABLES DE ENTORNO (con valores por defecto)
 # -------------------------------------------------------------------
 CAPTCHA_PROVIDER = os.getenv('CAPTCHA_PROVIDER', '2captcha')
 API_KEY_2CAPTCHA = os.getenv('API_KEY_2CAPTCHA', '')
@@ -47,6 +46,12 @@ API_HOST = os.getenv('API_HOST', '0.0.0.0')
 API_PORT = int(os.getenv('API_PORT', '8080'))
 API_KEY = os.getenv('API_KEY', '')
 FIVESIM_API_KEY = os.getenv('FIVESIM_API_KEY', '')
+
+# ----- Timeouts configurables (en segundos) -----
+WAIT_TIMEOUT = int(os.getenv('WAIT_TIMEOUT', '10'))          # Espera general para elementos
+NAVIGATION_TIMEOUT = int(os.getenv('NAVIGATION_TIMEOUT', '30'))  # Espera de navegación
+ACTION_TIMEOUT = int(os.getenv('ACTION_TIMEOUT', '5'))          # Espera para acciones específicas (clics, llenado)
+MAX_RETRIES = int(os.getenv('MAX_RETRIES', '2'))               # Reintentos globales
 
 # Proxy
 PROXY_AUTH = None
@@ -292,7 +297,7 @@ def solve_anticaptcha_coordinates(image_path, hint):
         return None
 
 # -------------------------------------------------------------------
-# SMS SERVICES
+# SMS SERVICES (sin cambios)
 # -------------------------------------------------------------------
 FIVESIM_BASE_URL = "https://5sim.net/v1"
 FIVESIM_COUNTRY_MAP = {
@@ -311,7 +316,6 @@ FIVESIM_COUNTRY_MAP = {
 }
 
 async def get_fivesim_number(country_code, product='amazon'):
-    """Compra un número en 5sim."""
     if not FIVESIM_API_KEY:
         logger.warning("⚠️ No hay API key de 5sim")
         return None
@@ -345,7 +349,6 @@ async def get_fivesim_number(country_code, product='amazon'):
         return None
 
 async def get_fivesim_code(order_id, timeout=180):
-    """Espera y obtiene el código SMS de 5sim."""
     url = f"{FIVESIM_BASE_URL}/user/check/{order_id}"
     headers = {'Authorization': f'Bearer {FIVESIM_API_KEY}', 'Accept': 'application/json'}
     start_time = time.time()
@@ -383,9 +386,7 @@ async def get_fivesim_code(order_id, timeout=180):
             await asyncio.sleep(5)
     return None
 
-# Hero SMS
 async def get_hero_sms_number(country_code, service='am'):
-    """Alquila un número en Hero SMS (API compatible con SMS-Activate)."""
     url = "https://hero-sms.com/stubs/handler_api.php"
     params = {
         'api_key': HERO_SMS_API_KEY,
@@ -397,7 +398,6 @@ async def get_hero_sms_number(country_code, service='am'):
     try:
         loop = asyncio.get_running_loop()
         response = await loop.run_in_executor(None, lambda: requests.get(url, params=params, timeout=30))
-        # Intentar parsear JSON
         try:
             data = response.json()
             if 'activationId' in data and 'phoneNumber' in data:
@@ -406,10 +406,8 @@ async def get_hero_sms_number(country_code, service='am'):
                 logger.warning(f"Hero SMS respuesta inesperada (JSON): {data}")
                 return None
         except ValueError:
-            # No es JSON, probablemente un mensaje de error en texto
             error_text = response.text.strip()
             logger.warning(f"Hero SMS respuesta no JSON: {error_text}")
-            # Aquí podrías mapear errores comunes
             if error_text == 'NO_NUMBERS':
                 logger.warning("Hero SMS: No hay números disponibles para este país/servicio")
             elif error_text == 'BAD_KEY':
@@ -422,7 +420,6 @@ async def get_hero_sms_number(country_code, service='am'):
         return None
     
 async def get_hero_sms_code(activation_id, timeout=180):
-    """Espera el código SMS en Hero SMS."""
     url = "https://hero-sms.com/stubs/handler_api.php"
     params = {
         'api_key': HERO_SMS_API_KEY,
@@ -444,21 +441,17 @@ async def get_hero_sms_code(activation_id, timeout=180):
             await asyncio.sleep(5)
     return None
 
-# Lista de servicios SMS disponibles
 SMS_SERVICES = [
     {'name': 'hero', 'enabled': bool(HERO_SMS_API_KEY), 'get_number': get_hero_sms_number, 'get_code': get_hero_sms_code},
     {'name': '5sim', 'enabled': bool(FIVESIM_API_KEY), 'get_number': get_fivesim_number, 'get_code': get_fivesim_code},
 ]
 
 ACCOUNT_TO_PURCHASE_COUNTRY = {
-    'MX': 'ID',  # Para cuentas mexicanas, comprar números de Indonesia
-    'US': 'ID',  # Para cuentas gringas, comprar números de USA
-    # ... puedes ajustar según prefieras
+    'MX': 'ID',
+    'US': 'ID',
 }
-    
 
 async def get_phone_number(account_country):
-    # Determinar qué país usar para la compra
     purchase_country = ACCOUNT_TO_PURCHASE_COUNTRY.get(account_country, account_country)
     logger.debug(f"Cuenta: {account_country}, comprando número de: {purchase_country}")
     
@@ -468,9 +461,7 @@ async def get_phone_number(account_country):
         logger.debug(f"Intentando con {service['name']}...")
         try:
             if service['name'] == 'hero':
-                # Hero requiere código numérico
                 hero_country_map = {'MX': 54, 'US': 187, 'CA': 36, 'UK': 16, 'DE': 43, 'FR': 78, 'IT': 86, 'ES': 56, 'JP': 182, 'AU': 175, 'IN': 22, 'ID': 6}
-                # Necesitamos mapear purchase_country (ISO) a código numérico
                 purchase_country_num = hero_country_map.get(purchase_country)
                 if not purchase_country_num:
                     logger.warning(f"No hay mapeo Hero SMS para {purchase_country}")
@@ -478,8 +469,6 @@ async def get_phone_number(account_country):
                 result = await service['get_number'](purchase_country_num, service='am')
                 if result:
                     phone_full, service_id = result
-                    # Quitar código de país según el país de compra (Hero devuelve con código)
-                    # Usamos el mapeo de prefijos para el país de compra
                     prefix_len = {'MX': 2, 'US': 1, 'CA': 1, 'UK': 2, 'DE': 2, 'FR': 2, 'IT': 2, 'ES': 2, 'JP': 2, 'AU': 2, 'IN': 2, 'ID': 2}.get(purchase_country, 0)
                     if prefix_len and len(phone_full) > prefix_len:
                         phone_local = phone_full[prefix_len:]
@@ -491,18 +480,16 @@ async def get_phone_number(account_country):
                         'local': phone_local,
                         'service_id': service_id,
                         'service_name': service['name'],
-                        'purchase_country': purchase_country  # <-- Guardamos el país de compra
+                        'purchase_country': purchase_country
                     }
             else:  # 5sim
-                # 5sim usa nombres de país en inglés, mapeamos purchase_country a ese nombre
                 country_name = FIVESIM_COUNTRY_MAP.get(purchase_country)
                 if not country_name:
                     logger.warning(f"No hay mapeo 5sim para {purchase_country}")
                     continue
-                result = await service['get_number'](purchase_country, product='amazon')  # Nota: get_fivesim_number espera el código ISO
+                result = await service['get_number'](purchase_country, product='amazon')
                 if result:
                     phone_full, service_id = result
-                    # 5sim a veces devuelve con código de país (ej. 521234567890 para Indonesia)
                     prefix_len = {'MX': 3, 'US': 2, 'CA': 2, 'UK': 3, 'DE': 3, 'FR': 3, 'IT': 3, 'ES': 3, 'JP': 3, 'AU': 3, 'IN': 3, 'ID': 3}.get(purchase_country, 0)
                     if prefix_len and len(phone_full) > prefix_len:
                         phone_local = phone_full[prefix_len:]
@@ -521,23 +508,16 @@ async def get_phone_number(account_country):
             continue
     return None
 
-
-
 async def wait_for_sms_code(service_name, service_id, page, max_retries=3, timeout_per_retry=30):
-    """
-    Espera el código SMS del servicio correspondiente, con reintentos y clic en "Reenviar código".
-    """
     for attempt in range(max_retries):
         logger.debug(f"📱 Esperando código SMS (intento {attempt+1}/{max_retries})...")
         code = None
-        # Obtener la función get_code según el servicio
         for s in SMS_SERVICES:
             if s['name'] == service_name and s['enabled']:
                 code = await s['get_code'](service_id, timeout=timeout_per_retry)
                 break
         if code:
             return code
-        # Si no llegó, hacer clic en reenviar
         try:
             resend_link = await page.query_selector('a#cvf-resend-link')
             if resend_link:
@@ -563,25 +543,67 @@ async def take_screenshot(page, step_name):
         logger.warning(f"⚠️ Error tomando screenshot en paso {step_name}: {e}")
         return None
 
-async def safe_get_content(page, timeout=20):
+# -------------------------------------------------------------------
+# FUNCIONES OPTIMIZADAS PARA PLAYWright
+# -------------------------------------------------------------------
+async def smart_goto(page, url, wait_until='domcontentloaded', timeout=NAVIGATION_TIMEOUT*1000):
+    start = time.time()
+    logger.debug(f"🌐 Navegando a {url} (wait_until={wait_until})")
+    await page.goto(url, wait_until=wait_until, timeout=timeout)
+    elapsed = time.time() - start
+    logger.debug(f"   ✅ Navegación completada en {elapsed:.2f}s")
+
+async def smart_click(page, selector, timeout=ACTION_TIMEOUT*1000, wait_for_navigation=False):
+    start = time.time()
+    logger.debug(f"🖱️ Intentando clic en selector: {selector}")
     try:
-        await page.wait_for_function('document.readyState === "complete"', timeout=timeout*1000)
-        await page.wait_for_timeout(500)
-        return await page.content()
+        element = await page.wait_for_selector(selector, state='visible', timeout=timeout)
+        if wait_for_navigation:
+            async with page.expect_navigation(timeout=NAVIGATION_TIMEOUT*1000):
+                await element.click()
+        else:
+            await element.click()
+        elapsed = time.time() - start
+        logger.debug(f"   ✅ Clic en {selector} completado en {elapsed:.2f}s")
+        return True
     except Exception as e:
-        logger.warning(f"⚠️ Error en safe_get_content: {e}")
-        await page.wait_for_timeout(2000)
-        return await page.content()
+        logger.debug(f"   ❌ Clic en {selector} falló: {e}")
+        return False
+
+async def smart_fill(page, selector, value, timeout=ACTION_TIMEOUT*1000):
+    start = time.time()
+    logger.debug(f"✍️ Llenando campo {selector} con valor: {value[:30]}...")
+    try:
+        element = await page.wait_for_selector(selector, state='visible', timeout=timeout)
+        await element.fill(value)
+        elapsed = time.time() - start
+        logger.debug(f"   ✅ Campo llenado en {elapsed:.2f}s")
+        return True
+    except Exception as e:
+        logger.debug(f"   ❌ Llenado falló: {e}")
+        return False
+
+async def wait_for_text(page, text, timeout=WAIT_TIMEOUT*1000):
+    start = time.time()
+    logger.debug(f"⌛ Esperando texto: {text[:50]}")
+    try:
+        await page.wait_for_function(f'document.body.innerText.includes("{text}")', timeout=timeout)
+        elapsed = time.time() - start
+        logger.debug(f"   ✅ Texto encontrado en {elapsed:.2f}s")
+        return True
+    except Exception:
+        elapsed = time.time() - start
+        logger.debug(f"   ❌ Texto no encontrado después de {elapsed:.2f}s")
+        return False
 
 # -------------------------------------------------------------------
-# FUNCIÓN PRINCIPAL DE CREACIÓN DE CUENTA
+# FUNCIÓN PRINCIPAL DE CREACIÓN DE CUENTA (OPTIMIZADA)
 # -------------------------------------------------------------------
 async def create_amazon_account(country_code, add_address_flag=True):
-    logger.debug(f"🏁 [ENTRADA] create_amazon_account para país {country_code} (vía número de teléfono)")
+    logger.debug(f"🏁 Iniciando creación de cuenta para {country_code}")
 
-    max_global_retries = 1  # Aumentado para mayor robustez
-    for global_attempt in range(1, max_global_retries + 1):
-        logger.debug(f"🔄 Intento global {global_attempt}/{max_global_retries}")
+    for global_attempt in range(1, MAX_RETRIES + 1):
+        logger.debug(f"🔄 Intento global {global_attempt}/{MAX_RETRIES}")
         playwright = None
         browser = None
         context = None
@@ -601,7 +623,7 @@ async def create_amazon_account(country_code, add_address_flag=True):
 
         try:
             # ----- PASO 1: Configurar sesión requests -----
-            logger.debug("📦 [PASO 1] Configurando sesión requests...")
+            logger.debug("📦 Configurando sesión requests...")
             session = requests.Session()
             retry_strategy = Retry(
                 total=3,
@@ -623,7 +645,7 @@ async def create_amazon_account(country_code, add_address_flag=True):
                 logger.warning("   ⚠️ No se configuró proxy")
 
             # ----- PASO 2: Probar proxy -----
-            logger.debug("🔄 [PASO 2] Probando proxy...")
+            logger.debug("🔄 Probando proxy...")
             ok, ip = test_proxy(session)
             if not ok:
                 logger.error(f"   ❌ Proxy no funciona: {ip}")
@@ -631,21 +653,20 @@ async def create_amazon_account(country_code, add_address_flag=True):
             logger.debug(f"   ✅ Proxy OK - IP pública: {ip}")
 
             # ----- PASO 3: Obtener número de teléfono temporal -----
-            logger.debug("📱 [PASO 3] Obteniendo número de teléfono temporal...")
+            logger.debug("📱 Obteniendo número de teléfono temporal...")
             phone_info = await get_phone_number(country_code)
             if not phone_info:
                 raise Exception("No se pudo obtener número de teléfono de ningún servicio")
             phone_number = phone_info['local']
             service_id = phone_info['service_id']
             service_name = phone_info['service_name']
-            purchase_country = phone_info.get('purchase_country', country_code)  # Si no viene, usar el de cuenta
+            purchase_country = phone_info.get('purchase_country', country_code)
             logger.debug(f"   ✅ Número obtenido: {phone_number} (servicio: {service_name}, ID: {service_id})")
             account_data['phone'] = phone_number
-            account_data['purchase_country'] = purchase_country  # Guardar para usarlo después
+            account_data['purchase_country'] = purchase_country
 
-
-            # ----- PASO 4: Generar credenciales (nombre y contraseña) -----
-            logger.debug("🔑 [PASO 4] Generando credenciales...")
+            # ----- PASO 4: Generar credenciales -----
+            logger.debug("🔑 Generando credenciales...")
             password = f"Pass{random.randint(1000,9999)}{uuid.uuid4().hex[:8]}"
             first_name = ''.join(random.choices('abcdefghijklmnopqrstuvwxyz', k=5)).capitalize()
             last_name = ''.join(random.choices('abcdefghijklmnopqrstuvwxyz', k=5)).capitalize()
@@ -656,16 +677,12 @@ async def create_amazon_account(country_code, add_address_flag=True):
             logger.debug(f"   🔐 Contraseña: {password}")
 
             # ----- PASO 5: Iniciar Playwright -----
-            logger.debug("🎬 [PASO 5] Iniciando Playwright...")
-            try:
-                playwright = await async_playwright().start()
-                logger.debug("   ✅ Playwright iniciado")
-            except Exception as e:
-                logger.error(f"   ❌ Error iniciando Playwright: {e}")
-                raise Exception(f"Error iniciando Playwright: {e}")
+            logger.debug("🎬 Iniciando Playwright...")
+            playwright = await async_playwright().start()
+            logger.debug("   ✅ Playwright iniciado")
 
             launch_options = {
-                'headless': True,  # En servidor, headless
+                'headless': True,
                 'args': [
                     '--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage',
                     '--disable-accelerated-2d-canvas', '--no-first-run', '--no-zygote',
@@ -747,13 +764,9 @@ async def create_amazon_account(country_code, add_address_flag=True):
                 logger.debug(f"   🌐 Proxy Playwright: {PROXY_HOST_PORT}")
 
             # ----- PASO 6: Lanzar browser -----
-            logger.debug("🚀 [PASO 6] Lanzando browser...")
-            try:
-                browser = await playwright.chromium.launch(**launch_options)
-                logger.debug("   ✅ Browser lanzado")
-            except Exception as e:
-                logger.error(f"   ❌ Error lanzando browser: {e}")
-                raise Exception(f"Error lanzando browser: {e}")
+            logger.debug("🚀 Lanzando browser...")
+            browser = await playwright.chromium.launch(**launch_options)
+            logger.debug("   ✅ Browser lanzado")
 
             context = await browser.new_context(
                 viewport={'width': 1280, 'height': 720},
@@ -762,7 +775,6 @@ async def create_amazon_account(country_code, add_address_flag=True):
                 timezone_id='America/Mexico_City' if country_code == 'MX' else 'America/New_York'
             )
 
-            # Inyectar script anti-detección
             await context.add_init_script("""
                 Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
                 Object.defineProperty(navigator, 'plugins', {get: () => [1,2,3,4,5]});
@@ -781,39 +793,15 @@ async def create_amazon_account(country_code, add_address_flag=True):
             """)
 
             page = await context.new_page()
-            logger.debug("   ✅ Contexto y página creados con evasión")
+            logger.debug("   ✅ Contexto y página creados")
 
-            # ----- PASO 7: Navegar a la URL base del país (con reintentos) -----
+            # ----- PASO 7: Navegar a la URL base -----
             base_url = base_urls[country_code]
-            logger.debug(f"🌐 [PASO 7] Navegando a URL base: {base_url}")
-
-            page_loaded = False
-            for attempt in range(3):
-                try:
-                    await page.goto(base_url, wait_until='domcontentloaded', timeout=30000)
-                    await page.wait_for_timeout(5000)
-                    body = await page.query_selector('body')
-                    if body:
-                        logger.debug(f"   ✅ Página cargada en intento {attempt+1}")
-                        page_loaded = True
-                        break
-                    else:
-                        logger.warning(f"   ⚠️ Intento {attempt+1}: no se detectó body")
-                except Exception as e:
-                    logger.warning(f"   ⚠️ Intento {attempt+1} falló: {e}")
-                    if attempt == 2:
-                        raise
-                    await asyncio.sleep(5)
-
-            if not page_loaded:
-                raise Exception("No se pudo cargar la página de Amazon después de reintentos")
-
-            await page.wait_for_timeout(3000)
+            await smart_goto(page, base_url, wait_until='domcontentloaded', timeout=NAVIGATION_TIMEOUT*1000)
             last_screenshot = await take_screenshot(page, "home_page")
-            logger.debug(f"   📍 URL actual: {page.url}")
 
             # ----- PASO 8: Hacer clic en "Hola, identifícate" -----
-            logger.debug("👤 [PASO 8] Buscando enlace de inicio de sesión...")
+            logger.debug("👤 Buscando enlace de inicio de sesión...")
             login_selectors = [
                 'a[data-nav-role="signin"]',
                 'a.nav-a[data-nav-role="signin"]',
@@ -822,77 +810,41 @@ async def create_amazon_account(country_code, add_address_flag=True):
                 'a:has-text("Hello, Sign in")',
                 'a:has-text("Identifícate")'
             ]
-            login_link = None
+            login_found = False
             for selector in login_selectors:
-                try:
-                    link = await page.wait_for_selector(selector, state='visible', timeout=8000)
-                    if link:
-                        login_link = link
-                        logger.debug(f"   ✅ Enlace de login encontrado con selector: {selector}")
-                        break
-                except:
-                    continue
-            if not login_link:
+                if await smart_click(page, selector, timeout=ACTION_TIMEOUT*1000, wait_for_navigation=True):
+                    login_found = True
+                    break
+            if not login_found:
                 raise Exception("No se encontró enlace de inicio de sesión")
-
-            await login_link.click()
-            await page.wait_for_load_state('load', timeout=30000)
-            await page.wait_for_timeout(2000)
-            logger.debug(f"   📍 URL después de login: {page.url}")
             last_screenshot = await take_screenshot(page, "after_login_click")
 
-            # ----- PASO 9: Ingresar número de teléfono en primera página -----
-            logger.debug("📱 [PASO 9] Ingresando número de teléfono...")
-            phone_field = None
-            phone_selectors = ['input#ap_email', 'input[name="email"]', 'input[type="email"]', 'input[type="tel"]']
-            for selector in phone_selectors:
-                field = await page.query_selector(selector)
-                if field and await field.is_visible():
-                    phone_field = field
-                    logger.debug(f"   ✅ Campo encontrado con selector: {selector}")
-                    break
-            if not phone_field:
+            # ----- PASO 9: Ingresar número de teléfono -----
+            logger.debug("📱 Ingresando número de teléfono...")
+            phone_field_selector = 'input#ap_email, input[name="email"], input[type="email"], input[type="tel"]'
+            if not await smart_fill(page, phone_field_selector, phone_info['full'], timeout=ACTION_TIMEOUT*1000):
                 raise Exception("No se encontró campo para ingresar número de teléfono")
-
-            # Usar el número completo con código de país (ej. +6285183673029)
-            full_phone = phone_info['full']  # Viene del servicio SMS
-            await phone_field.fill(full_phone)
-            logger.debug(f"   ✅ Número ingresado: {full_phone}")
             last_screenshot = await take_screenshot(page, "phone_llenado")
 
-
-
-
-
-
             # ----- PASO 10: Hacer clic en Continuar -----
-            logger.debug("🖱️ [PASO 10] Haciendo clic en Continuar...")
-            continue_button = None
+            logger.debug("🖱️ Haciendo clic en Continuar...")
             continue_selectors = ['input#continue', 'input.a-button-input', 'button#continue']
+            continue_clicked = False
             for selector in continue_selectors:
-                btn = await page.query_selector(selector)
-                if btn and await btn.is_visible():
-                    continue_button = btn
-                    logger.debug(f"   ✅ Botón Continuar encontrado con selector: {selector}")
+                if await smart_click(page, selector, timeout=ACTION_TIMEOUT*1000, wait_for_navigation=True):
+                    continue_clicked = True
                     break
-            if not continue_button:
+            if not continue_clicked:
                 raise Exception("No se encontró botón Continuar")
-
-            await continue_button.click()
-            await page.wait_for_load_state('load', timeout=15000)
-            await page.wait_for_timeout(2000)
-            logger.debug(f"   📍 Nueva URL: {page.url}")
             last_screenshot = await take_screenshot(page, "despues_continuar")
 
-            # ----- PASO 10.5: Verificar si la página es de inicio de sesión (número ya registrado) -----
-            content = await safe_get_content(page)
+            # ----- PASO 10.5: Verificar si es página de inicio de sesión (número registrado) -----
             if "claim?" in page.url.lower():
                 logger.warning("⚠️ Detectada página de inicio de sesión (número posiblemente ya registrado). Reintentando con nueva IP...")
-                last_screenshot = await take_screenshot(page, "error_numero_registrado")
                 raise Exception("Número ya registrado o sesión inesperada")
 
             # ----- PASO 11: Página intermedia "Proceder a crear una cuenta" -----
-            logger.debug("🔍 [PASO 11] Verificando página intermedia...")
+            logger.debug("🔍 Verificando página intermedia...")
             proceed_selectors = [
                 'span#intention-submit-button input.a-button-input',
                 'input[value="Proceder a crear una cuenta"]',
@@ -900,54 +852,31 @@ async def create_amazon_account(country_code, add_address_flag=True):
                 'input[value*="Create account"]',
                 'button:has-text("Create account")'
             ]
-            proceed_button = None
+            proceed_clicked = False
             for selector in proceed_selectors:
+                if await smart_click(page, selector, timeout=ACTION_TIMEOUT*1000, wait_for_navigation=False):
+                    proceed_clicked = True
+                    break
+            if proceed_clicked:
+                # Esperar a que aparezca el formulario de registro
                 try:
-                    btn = await page.wait_for_selector(selector, state='visible', timeout=4000)
-                    if btn:
-                        proceed_button = btn
-                        logger.debug(f"   ✅ Botón 'Proceder' encontrado con selector: {selector}")
-                        break
-                except:
-                    continue
-
-            if proceed_button:
-                logger.debug("   🔘 Haciendo clic en 'Proceder'...")
-                await proceed_button.click()
-                try:
-                    await page.wait_for_selector('#ap_customer_name', state='visible', timeout=30000)
-                    logger.debug("   ✅ Campo de nombre visible, formulario cargado")
+                    await page.wait_for_selector('#ap_customer_name', state='visible', timeout=WAIT_TIMEOUT*1000)
+                    logger.debug("   ✅ Formulario de registro cargado")
                 except Exception as e:
-                    content = await safe_get_content(page)
-                    if "JavaScript se ha deshabilitado" in content:
-                        raise Exception("Error: JavaScript deshabilitado")
                     raise Exception(f"Timeout esperando campo de nombre: {e}")
-                await page.wait_for_timeout(2000)
-                last_screenshot = await take_screenshot(page, "despues_proceder")
             else:
                 raise Exception("No se pudo acceder al formulario de registro después de Continuar")
+            last_screenshot = await take_screenshot(page, "despues_proceder")
 
-            # ----- PASO 12: Llenar formulario de registro (nombre, contraseña) -----
-            logger.debug("📝 [PASO 12] Llenando formulario completo...")
+            # ----- PASO 12: Llenar formulario de registro -----
+            logger.debug("📝 Llenando formulario completo...")
             last_screenshot = await take_screenshot(page, "formulario_antes_llenar")
-
-            async def safe_fill(selector, value, desc):
-                for attempt in range(3):
-                    try:
-                        field = await page.wait_for_selector(selector, state='visible', timeout=5000)
-                        await field.fill(value)
-                        logger.debug(f"   ✅ {desc} llenado con selector: {selector}")
-                        return True
-                    except Exception as e:
-                        logger.debug(f"      ⚠️ Intento {attempt+1} falló: {str(e)[:50]}")
-                        await page.wait_for_timeout(1000)
-                return False
 
             # Nombre
             name_selectors = ['input#ap_customer_name', 'input[name="customerName"]']
             name_filled = False
             for sel in name_selectors:
-                if await safe_fill(sel, fullname, "Nombre"):
+                if await smart_fill(page, sel, fullname):
                     name_filled = True
                     break
             if not name_filled:
@@ -957,53 +886,41 @@ async def create_amazon_account(country_code, add_address_flag=True):
             pwd_selectors = ['input#ap_password', 'input[name="password"]']
             pwd_filled = False
             for sel in pwd_selectors:
-                if await safe_fill(sel, password, "Contraseña"):
+                if await smart_fill(page, sel, password):
                     pwd_filled = True
                     break
             if not pwd_filled:
                 raise Exception("No se pudo llenar campo de contraseña")
 
-            # Confirmación de contraseña
+            # Confirmación
             confirm_selectors = ['input#ap_password_check', 'input[name="passwordCheck"]']
             for sel in confirm_selectors:
-                if await safe_fill(sel, password, "Confirmación"):
-                    break
+                await smart_fill(page, sel, password)
 
             # ----- PASO 13: Botón de registro final -----
-            logger.debug("🎯 [PASO 13] Buscando botón de registro final...")
+            logger.debug("🎯 Buscando botón de registro final...")
             final_btn_selectors = [
                 'input#continue', 'input.a-button-input', 'button[type="submit"]',
                 'input[value*="Crear cuenta"]', 'button:has-text("Crear cuenta")',
                 'input[value*="Create account"]', 'button:has-text("Create account")'
             ]
-            clicked = False
-            for sel in final_btn_selectors:
-                try:
-                    btn = await page.wait_for_selector(sel, state='visible', timeout=3000)
-                    if btn:
-                        await btn.click()
-                        logger.debug(f"   ✅ Botón final clickeado con selector: {sel}")
-                        clicked = True
-                        break
-                except:
-                    continue
-            if not clicked:
+            clicked_final = False
+            for selector in final_btn_selectors:
+                if await smart_click(page, selector, timeout=ACTION_TIMEOUT*1000, wait_for_navigation=True):
+                    clicked_final = True
+                    break
+            if not clicked_final:
                 logger.warning("⚠️ No se encontró botón de registro final, puede que ya se haya enviado")
-
-            await page.wait_for_load_state('load', timeout=30000)
             last_screenshot = await take_screenshot(page, "despues_registro")
 
-            # ----- PASO 14: Detectar captcha después del envío -----
-            logger.debug("🔍 [PASO 14] Verificando captcha después del envío...")
-            await page.wait_for_timeout(5000)
-            content = await safe_get_content(page)
-
-            if "Resuelve esta adivinanza" in content or "Elija todo las sillas" in content or "Elija todo" in content:
+            # ----- PASO 14: Detectar captcha -----
+            logger.debug("🔍 Verificando captcha después del envío...")
+            if await wait_for_text(page, "Resuelve esta adivinanza", timeout=5*1000) or await wait_for_text(page, "Elija todo", timeout=5*1000):
                 logger.warning("⚠️ Captcha de selección de imágenes detectado")
-                await page.wait_for_timeout(4000)
                 last_screenshot = await take_screenshot(page, "captcha_seleccion")
                 canvas_element = await page.query_selector('canvas')
                 img_element = await page.query_selector('img[src*="captcha"]')
+                click_element = None
                 if canvas_element:
                     logger.debug("   ✅ Captcha es un canvas, tomando screenshot del elemento")
                     screenshot_bytes = await canvas_element.screenshot()
@@ -1016,7 +933,7 @@ async def create_amazon_account(country_code, add_address_flag=True):
                     img_src = await img_element.get_attribute('src')
                     if not img_src:
                         logger.error("La imagen del captcha no tiene src")
-                        return None, "La imagen del captcha no tiene src", last_screenshot
+                        raise Exception("Imagen de captcha sin src")
                     img_data = requests.get(img_src, timeout=10).content
                     img_path = 'temp_image_captcha.jpg'
                     with open(img_path, 'wb') as f:
@@ -1056,10 +973,8 @@ async def create_amazon_account(country_code, add_address_flag=True):
                     coordinates = solve_anticaptcha_coordinates(img_path, hint_text)
                     if coordinates:
                         logger.debug(f"✅ anticaptcha resolvió coordenadas: {coordinates}")
-                    else:
-                        logger.warning("   anticaptcha no devolvió coordenadas")
                 if not coordinates:
-                    return None, "No se pudo resolver captcha de coordenadas", last_screenshot
+                    raise Exception("No se pudo resolver captcha de coordenadas")
 
                 # Realizar clics
                 box = await click_element.bounding_box()
@@ -1069,7 +984,7 @@ async def create_amazon_account(country_code, add_address_flag=True):
                             abs_x = box['x'] + int(point['x'])
                             abs_y = box['y'] + int(point['y'])
                             await page.mouse.click(abs_x, abs_y)
-                            await asyncio.sleep(0.5)
+                            await asyncio.sleep(0.3)  # breve pausa entre clics
                         except Exception as e:
                             logger.warning(f"   ⚠️ Error al hacer clic: {e}")
                 else:
@@ -1080,78 +995,45 @@ async def create_amazon_account(country_code, add_address_flag=True):
                 if confirm_btn:
                     await confirm_btn.click()
                     logger.debug("✅ Clic en botón de confirmar")
-                    await page.wait_for_load_state('load', timeout=30000)
+                    await page.wait_for_load_state('domcontentloaded', timeout=NAVIGATION_TIMEOUT*1000)
                 else:
                     logger.warning("⚠️ No se encontró botón de confirmar")
-                await page.wait_for_timeout(5000)
-                content = await safe_get_content(page)
+                await page.wait_for_timeout(2000)  # pequeña pausa tras confirmar
 
-            # ----- PASO 15: Verificación por SMS (con posible redirección a WhatsApp) -----
-            logger.debug("📱 [PASO 15] Verificando página de verificación de número...")
-            await page.wait_for_timeout(5000)
-            content = await safe_get_content(page)
-
-            if "Verificar con WhatsApp" in content or "Enviar código por SMS" in content:
-                logger.warning("⚠️ Página de verificación con WhatsApp detectada, seleccionando SMS...")
-                sms_option = await page.query_selector('#secondary_channel_button input.a-button-input')
-                if not sms_option:
-                    sms_option = await page.query_selector('#secondary_channel_button')
-                if not sms_option:
-                    sms_option = await page.query_selector('xpath=//*[contains(text(), "Enviar código por SMS")]')
-                if sms_option:
-                    await page.wait_for_timeout(500)
-                    await sms_option.click()
-                    logger.debug("   ✅ Clic en 'Enviar código por SMS'")
-                    await page.wait_for_load_state('load', timeout=15000)
-                else:
-                    logger.warning("   ⚠️ No se encontró la opción de SMS, puede que ya esté en la página de código")
-
-            # Esperar el campo de código
+            # ----- PASO 15: Verificación por SMS -----
+            logger.debug("📱 Verificando página de verificación de número...")
             try:
-                code_input = await page.wait_for_selector('#cvf-input-code', state='visible', timeout=30000)
+                await page.wait_for_selector('#cvf-input-code', state='visible', timeout=WAIT_TIMEOUT*1000)
                 logger.debug("   📱 Página de ingreso de código SMS detectada")
-            except Exception as e:
-                # Si no aparece, verificar si hay mensaje de error
-                error_msg = await page.query_selector('.a-alert-content, .a-alert-error')
-                if error_msg:
-                    error_text = await error_msg.text_content()
-                    if "Hemos enviado tu OTP" in error_text:
-                        logger.debug("   ℹ️ Mensaje de envío detectado, esperando campo de código...")
-                        await page.wait_for_timeout(3000)
-                        code_input = await page.wait_for_selector('#cvf-input-code', state='visible', timeout=30000)
-                    else:
-                        logger.error(f"❌ Error en verificación SMS: {error_text}")
-                        raise Exception(f"Error en verificación SMS: {error_text}")
+            except Exception:
+                # Quizás hay que seleccionar SMS en lugar de WhatsApp
+                if await page.query_selector('#secondary_channel_button'):
+                    await smart_click(page, '#secondary_channel_button', timeout=ACTION_TIMEOUT*1000)
+                    logger.debug("   ✅ Clic en 'Enviar código por SMS'")
+                    await page.wait_for_selector('#cvf-input-code', state='visible', timeout=WAIT_TIMEOUT*1000)
                 else:
-                    raise
+                    error_msg = await page.text_content('.a-alert-content, .a-alert-error')
+                    if error_msg:
+                        raise Exception(f"Error en verificación SMS: {error_msg}")
+                    else:
+                        raise Exception("No se pudo acceder al campo de código SMS")
 
             # Obtener el código SMS
             sms_code = await wait_for_sms_code(service_name, service_id, page, max_retries=3, timeout_per_retry=30)
             if sms_code:
-                # Volver a buscar el campo por si cambió
-                code_input = await page.query_selector('#cvf-input-code')
-                if not code_input or not await code_input.is_visible():
-                    code_input = await page.wait_for_selector('#cvf-input-code', state='visible', timeout=10000)
+                code_input = await page.wait_for_selector('#cvf-input-code', state='visible', timeout=ACTION_TIMEOUT*1000)
                 await code_input.fill(sms_code)
                 logger.debug(f"   ✅ Código SMS ingresado: {sms_code}")
                 verify_btn = await page.query_selector('input[type="submit"], button:has-text("Verificar"), button:has-text("Verify")')
                 if verify_btn:
                     await verify_btn.click()
-                    await page.wait_for_load_state('load', timeout=20000)
+                    await page.wait_for_load_state('domcontentloaded', timeout=NAVIGATION_TIMEOUT*1000)
                 else:
                     logger.warning("   ⚠️ No se encontró botón de verificar")
             else:
                 raise Exception("No se pudo obtener código de verificación SMS")
 
-            # ----- PASO 18: Verificar errores en la página -----
-            soup = BeautifulSoup(content, 'html.parser')
-            error_div = soup.find('div', {'class': re.compile('a-alert-error|a-alert-warning|a-box-error')})
-            if error_div:
-                error_msg = error_div.get_text(strip=True)
-                logger.error(f"   ❌ Error en registro: {error_msg}")
-                raise Exception(f"Error en registro: {error_msg}")
-
-            # ----- PASO 19: Verificar éxito (cuenta creada) -----
+            # ----- PASO 16: Verificar éxito -----
             if 'your-account' in page.url.lower() or 'account' in page.url.lower() or 'welcome' in page.url.lower():
                 logger.debug("   ✅ Registro exitoso!")
                 cookies = await context.cookies()
@@ -1161,39 +1043,26 @@ async def create_amazon_account(country_code, add_address_flag=True):
                 account_data['cookie_string'] = cookie_string
                 logger.debug(f"   🍪 Cookies obtenidas: {len(cookie_dict)} cookies")
 
-                # ----- PASO 20: Agregar dirección (opcional) -----
+                # ----- PASO 17: Agregar dirección (opcional) -----
                 if add_address_flag:
-                    logger.debug("📍 [PASO 20] Agregando dirección...")
-                    address_success = False
+                    logger.debug("📍 Agregando dirección...")
                     try:
-                        # Navegar a la página de direcciones
-                        logger.debug("   Navegando a address book...")
-                        await page.wait_for_timeout(5000)
-                        await page.goto(address_book_urls[country_code], wait_until='domcontentloaded', timeout=30000)
-                        await page.wait_for_timeout(2000)
+                        await smart_goto(page, address_book_urls[country_code], wait_until='domcontentloaded', timeout=NAVIGATION_TIMEOUT*1000)
                         last_screenshot = await take_screenshot(page, "address_book_page")
-                        logger.debug("   📸 Captura: address_book_page")
 
                         # Buscar y hacer clic en "Agregar dirección"
-                        logger.debug("   Buscando enlace para agregar dirección...")
-                        add_link = await page.query_selector('a[href*="/a/addresses/add"]')
-                        if not add_link:
-                            add_link = await page.query_selector('a:has-text("Agregar dirección")')
+                        add_link = await page.query_selector('a[href*="/a/addresses/add"], a:has-text("Agregar dirección")')
                         if add_link:
                             await add_link.click()
                             logger.debug("   ✅ Clic en 'Agregar dirección'")
-                            await page.wait_for_load_state('domcontentloaded', timeout=15000)
-                            await page.wait_for_timeout(2000)
+                            await page.wait_for_load_state('domcontentloaded', timeout=NAVIGATION_TIMEOUT*1000)
                             last_screenshot = await take_screenshot(page, "after_add_click")
-                            logger.debug("   📸 Captura: after_add_click")
                         else:
                             logger.warning("   ⚠️ No se encontró enlace, yendo a URL directa")
-                            await page.goto(add_address_urls[country_code], wait_until='load', timeout=20000)
-                            await page.wait_for_timeout(2000)
+                            await smart_goto(page, add_address_urls[country_code], wait_until='domcontentloaded', timeout=NAVIGATION_TIMEOUT*1000)
                             last_screenshot = await take_screenshot(page, "add_address_form_direct")
-                            logger.debug("   📸 Captura: add_address_form_direct")
 
-                        # Datos de dirección (para MX usamos dirección USA)
+                        # Datos de dirección
                         address_data = {
                             'MX': {
                                 'countryCode': 'US',
@@ -1215,153 +1084,70 @@ async def create_amazon_account(country_code, add_address_flag=True):
                             },
                         }
                         country_data = address_data.get(country_code, address_data['US'])
-                        target_country = country_data['countryCode']  # 'US'
-                        logger.debug(f"   Datos a ingresar: {country_data}")
 
-                        # ---- Seleccionar país con verificación ----
-                        try:
-                            logger.debug("   Seleccionando país...")
-                            # Buscar el dropdown de país (el botón que muestra el país actual)
-                            country_dropdown = await page.query_selector('span.a-button-text[data-action="a-dropdown-button"]')
-                            if country_dropdown:
-                                await country_dropdown.click()
-                                await page.wait_for_timeout(1000)
-                                
-                                # Buscar la opción "Estados Unidos" por texto o por data-value
-                                us_option = await page.query_selector(f'a:has-text("Estados Unidos"), a[data-value*="{target_country}"]')
-                                if us_option:
-                                    await us_option.click()
-                                    logger.debug("   ✅ Clic en Estados Unidos")
-                                    # Esperar a que el formulario se actualice
-                                    await page.wait_for_timeout(3000)
-                                    
-                                    # Verificar que el país se haya cambiado correctamente
-                                    country_button_text = await page.text_content('span.a-button-text[data-action="a-dropdown-button"]')
-                                    if country_button_text and "Estados Unidos" in country_button_text:
-                                        logger.debug("   ✅ País cambiado a Estados Unidos confirmado")
-                                    else:
-                                        logger.warning("   ⚠️ No se pudo confirmar el cambio de país, puede que haya fallado")
-                                        # Opcional: reintentar
-                                else:
-                                    logger.warning("   ⚠️ No se encontró la opción Estados Unidos")
-                            else:
-                                logger.warning("   ⚠️ No se encontró dropdown de país")
-                        except Exception as e:
-                            logger.warning(f"   ⚠️ Error seleccionando país: {e}")
+                        # Seleccionar país
+                        country_dropdown = await page.query_selector('span.a-button-text[data-action="a-dropdown-button"]')
+                        if country_dropdown:
+                            await country_dropdown.click()
+                            await page.wait_for_timeout(1000)  # esperar animación
+                            us_option = await page.query_selector('a:has-text("Estados Unidos"), a[data-value*="US"]')
+                            if us_option:
+                                await us_option.click()
+                                await page.wait_for_timeout(2000)  # esperar actualización del formulario
+                        else:
+                            logger.warning("   ⚠️ No se encontró dropdown de país")
 
-                        # Esperar a que el formulario termine de cargar después del cambio de país
-                        await page.wait_for_timeout(2000)
-
-                        # ---- Llenar campos con fallbacks ----
-                        logger.debug("   Llenando campos...")
-                        await page.fill('#address-ui-widgets-enterAddressFullName', country_data['fullName'])
-                        await page.fill('#address-ui-widgets-enterAddressPhoneNumber', country_data['phone'])
-                        await page.fill('#address-ui-widgets-enterAddressLine1', country_data['line1'])
-
-                        # Ciudad (puede ser un input diferente)
-                        city_input = await page.query_selector('#address-ui-widgets-enterAddressCity-input')
-                        if not city_input:
-                            city_container = await page.query_selector('#address-ui-widgets-enterAddressCity')
-                            if city_container:
-                                city_input = await city_container.query_selector('input')
+                        # Llenar campos
+                        await smart_fill(page, '#address-ui-widgets-enterAddressFullName', country_data['fullName'])
+                        await smart_fill(page, '#address-ui-widgets-enterAddressPhoneNumber', country_data['phone'])
+                        await smart_fill(page, '#address-ui-widgets-enterAddressLine1', country_data['line1'])
+                        city_input = await page.query_selector('#address-ui-widgets-enterAddressCity-input, #address-ui-widgets-enterAddressCity input')
                         if city_input:
                             await city_input.fill(country_data['city'])
                         else:
-                            logger.warning("   ⚠️ No se encontró campo de ciudad, intentando selector genérico")
-                            await page.fill('input[aria-label*="Ciudad"]', country_data['city'])
+                            await smart_fill(page, 'input[aria-label*="Ciudad"]', country_data['city'])
 
-                        logger.debug("   ✅ Campos básicos llenados")
+                        # Seleccionar estado (dropdown)
+                        state_dropdown = await page.query_selector('span.a-button-text[data-action="a-dropdown-button"]')
+                        if state_dropdown:
+                            await state_dropdown.click()
+                            await page.wait_for_timeout(1000)
+                            state_option = await page.query_selector(f'a:has-text("{country_data["state"]}"), a[data-value*="{country_data["state"]}"]')
+                            if state_option:
+                                await state_option.click()
+                                await page.wait_for_timeout(1000)
+                        else:
+                            logger.warning("   ⚠️ No se encontró dropdown de estado")
 
-                        # ---- Seleccionar estado ----
-                        try:
-                            logger.debug("   Seleccionando estado...")
-                            await page.wait_for_timeout(2000)
-                            state_dropdown = await page.query_selector('span.a-button-text[data-action="a-dropdown-button"]:has-text("Seleccionar")')
-                            if not state_dropdown:
-                                dropdowns = await page.query_selector_all('span.a-button-text[data-action="a-dropdown-button"]')
-                                if len(dropdowns) >= 2:
-                                    state_dropdown = dropdowns[1]
-                            if state_dropdown:
-                                await state_dropdown.click()
-                                await page.wait_for_timeout(1500)
-                                state_option = await page.query_selector('a:has-text("New York")')
-                                if not state_option:
-                                    state_option = await page.query_selector(f'a[data-value*="{country_data["state"]}"]')
-                                if state_option:
-                                    await state_option.click()
-                                    logger.debug(f"   ✅ Estado seleccionado: {country_data['state']}")
-                                    await page.wait_for_timeout(1500)
-                                else:
-                                    logger.warning(f"   ⚠️ No se encontró opción de estado {country_data['state']}")
-                            else:
-                                logger.warning("   ⚠️ No se encontró dropdown de estado")
-                        except Exception as e:
-                            logger.warning(f"   ⚠️ Error seleccionando estado: {e}")
+                        await smart_fill(page, '#address-ui-widgets-enterAddressPostalCode', country_data['postalCode'])
 
-                        # Código postal
-                        await page.fill('#address-ui-widgets-enterAddressPostalCode', country_data['postalCode'])
-                        logger.debug("   ✅ Código postal llenado")
-
-                        # ---- Función auxiliar para buscar botón de envío ----
-                        async def find_submit_button():
-                            for selector in [
-                                'span#address-ui-widgets-form-submit-button input[type="submit"]',
-                                'span[data-action="form-submit-button-click"] input[type="submit"]',
-                                'input[value="Agregar dirección"]',
-                                'input[type="submit"]'
-                            ]:
-                                btn = await page.query_selector(selector)
-                                if btn:
-                                    return btn
-                            return None
-
-                        submit_btn = await find_submit_button()
+                        # Enviar formulario (con doble clic si es necesario)
+                        submit_btn = await page.query_selector('span#address-ui-widgets-form-submit-button input[type="submit"], input[value="Agregar dirección"]')
                         if submit_btn:
-                            # Primer clic
-                            logger.debug("   Realizando primer clic...")
                             await submit_btn.click()
-                            await page.wait_for_timeout(3000)
-
-                            # Verificar errores
+                            await page.wait_for_timeout(3000)  # esperar error si ocurre
                             error_elem = await page.query_selector('.a-alert-error, .a-alert-warning')
                             if error_elem:
-                                error_text = await error_elem.text_content()
-                                logger.warning(f"   ⚠️ Error después del primer clic: {error_text}")
-                                logger.debug("   Realizando segundo clic...")
-                                submit_btn2 = await find_submit_button()
+                                logger.debug("   ⚠️ Primer clic produjo error, realizando segundo clic")
+                                submit_btn2 = await page.query_selector('span#address-ui-widgets-form-submit-button input[type="submit"], input[value="Agregar dirección"]')
                                 if submit_btn2:
-                                    async with page.expect_navigation(timeout=15000):
+                                    async with page.expect_navigation(timeout=NAVIGATION_TIMEOUT*1000):
                                         await submit_btn2.click()
                                     logger.debug("   ✅ Segundo clic realizado, navegación detectada")
                                 else:
                                     raise Exception("Botón desapareció después del primer clic")
                             else:
-                                # Intentar esperar navegación
-                                try:
-                                    async with page.expect_navigation(timeout=15000):
-                                        pass
-                                    logger.debug("   ✅ Navegación detectada después del primer clic")
-                                except:
-                                    # Forzar segundo clic
-                                    logger.debug("   No hubo navegación, realizando segundo clic...")
-                                    submit_btn2 = await find_submit_button()
-                                    if submit_btn2:
-                                        async with page.expect_navigation(timeout=15000):
-                                            await submit_btn2.click()
-                                        logger.debug("   ✅ Segundo clic realizado")
-                                    else:
-                                        raise Exception("Botón desapareció")
-
-                            # Verificar resultado
-                            new_url = page.url
-                            logger.debug(f"   Nueva URL: {new_url}")
-                            if "addresses" in new_url:
-                                account_data['address'] = "Dirección agregada exitosamente"
-                                logger.debug("   ✅ Dirección agregada")
-                            else:
-                                raise Exception(f"Redirección inesperada a {new_url}")
+                                # Si no hubo error, asumimos que el primer clic funcionó
+                                logger.debug("   ✅ Dirección agregada sin error")
                         else:
                             raise Exception("No se encontró botón de envío")
+
+                        # Verificar resultado
+                        if "addresses" in page.url:
+                            account_data['address'] = "Dirección agregada exitosamente"
+                            logger.debug("   ✅ Dirección agregada")
+                        else:
+                            raise Exception(f"Redirección inesperada a {page.url}")
                     except Exception as e:
                         logger.warning(f"⚠️ Error agregando dirección: {e}")
                         account_data['address'] = f"Error: {e}"
@@ -1374,7 +1160,7 @@ async def create_amazon_account(country_code, add_address_flag=True):
 
         except Exception as e:
             logger.error(f"❌ Error en intento {global_attempt}: {e}")
-            if global_attempt == max_global_retries:
+            if global_attempt == MAX_RETRIES:
                 if page:
                     last_screenshot = await take_screenshot(page, "error_final")
                 return None, str(e), last_screenshot
@@ -1391,7 +1177,7 @@ async def create_amazon_account(country_code, add_address_flag=True):
                 await asyncio.sleep(5)
                 continue
         finally:
-            logger.debug("🧹 Limpiando recursos (fin del intento)...")
+            logger.debug("🧹 Limpiando recursos...")
             if page:
                 await page.close()
             if context:
@@ -1440,7 +1226,7 @@ def after_request(response):
 def home():
     return jsonify({
         'status': 'online',
-        'service': 'Amazon Cookie Generator API (mejorado)',
+        'service': 'Amazon Cookie Generator API (optimizado)',
         'endpoints': {
             '/generate': 'POST - Generar cookie (JSON: {"country": "MX", "add_address": true})',
             '/health': 'GET - Verificar estado'
@@ -1493,7 +1279,13 @@ def diagnostic():
             'has_anticaptcha': bool(API_KEY_ANTICAPTCHA),
             'hero_sms': bool(HERO_SMS_API_KEY),
             'fivesim': bool(FIVESIM_API_KEY),
-            'supported_countries': list(base_urls.keys())
+            'supported_countries': list(base_urls.keys()),
+            'timeouts': {
+                'WAIT_TIMEOUT': WAIT_TIMEOUT,
+                'NAVIGATION_TIMEOUT': NAVIGATION_TIMEOUT,
+                'ACTION_TIMEOUT': ACTION_TIMEOUT,
+                'MAX_RETRIES': MAX_RETRIES
+            }
         }
     })
 
@@ -1506,7 +1298,7 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     if args.cli:
-        print("🍪 Generador de Cookies Amazon - Modo CLI")
+        print("🍪 Generador de Cookies Amazon - Modo CLI (optimizado)")
         if not API_KEY_2CAPTCHA and not API_KEY_ANTICAPTCHA:
             print("❌ ERROR: Configura al menos una API de captcha")
             sys.exit(1)
@@ -1541,5 +1333,5 @@ if __name__ == '__main__':
             elif op == '2':
                 break
     else:
-        print(f"🚀 Iniciando API en {API_HOST}:{API_PORT}")
+        print(f"🚀 Iniciando API optimizada en {API_HOST}:{API_PORT}")
         app.run(host=API_HOST, port=API_PORT, debug=False, threaded=True)
