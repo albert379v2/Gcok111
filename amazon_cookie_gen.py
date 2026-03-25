@@ -1129,7 +1129,7 @@ async def create_amazon_account(country_code, add_address_flag=True):
                         if add_link:
                             await add_link.click()
                             logger.debug("   ✅ Clic en 'Agregar dirección'")
-                            await page.wait_for_load_state('domcontentloaded', timeout=NAVIGATION_TIMEOUT*1000)
+                            await page.wait_for_load_state('domcontentloaded', timeout=NAVIGATION_TIMEOUT*1600)
                             last_screenshot = await take_screenshot(page, "after_add_click")
                         else:
                             logger.warning("   ⚠️ No se encontró enlace, yendo a URL directa")
