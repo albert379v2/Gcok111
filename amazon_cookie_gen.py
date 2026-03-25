@@ -562,7 +562,7 @@ async def safe_get_content(page, timeout=20):
 async def block_resources(route):
     """Bloquea solo recursos pesados, deja CSS y JS para funcionalidad."""
     resource_type = route.request.resource_type
-    if resource_type in ['image']:
+    if resource_type in ['']:
         await route.abort()
     else:
         await route.continue_()
@@ -1377,85 +1377,6 @@ async def create_amazon_account(country_code, add_address_flag=True):
 
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-                        # Llenar campos
-                        await smart_fill(page, '#address-ui-widgets-enterAddressFullName', country_data['fullName'])
-                        await smart_fill(page, '#address-ui-widgets-enterAddressPhoneNumber', country_data['phone'])
-                        await smart_fill(page, '#address-ui-widgets-enterAddressLine1', country_data['line1'])
-                        city_input = await page.query_selector('#address-ui-widgets-enterAddressCity-input, #address-ui-widgets-enterAddressCity input')
-                        if city_input:
-                            await city_input.fill(country_data['city'])
-                        else:
-                            await smart_fill(page, 'input[aria-label*="Ciudad"]', country_data['city'])
-
-                        # Seleccionar estado (dropdown)
-                        state_dropdown = await page.query_selector('span.a-button-text[data-action="a-dropdown-button"]')
-                        if state_dropdown:
-                            await state_dropdown.click()
-                            await page.wait_for_timeout(1000)
-                            state_option = await page.query_selector(f'a:has-text("{country_data["state"]}"), a[data-value*="{country_data["state"]}"]')
-                            if state_option:
-                                await state_option.click()
-                                await page.wait_for_timeout(1000)
-                        else:
-                            logger.warning("   ⚠️ No se encontró dropdown de estado")
-
-                        await smart_fill(page, '#address-ui-widgets-enterAddressPostalCode', country_data['postalCode'])
-
-                        # Enviar formulario (con doble clic si es necesario)
-                        submit_btn = await page.query_selector('span#address-ui-widgets-form-submit-button input[type="submit"], input[value="Agregar dirección"]')
-                        if submit_btn:
-                            await submit_btn.click()
-                            await page.wait_for_timeout(3000)  # esperar error si ocurre
-                            error_elem = await page.query_selector('.a-alert-error, .a-alert-warning')
-                            if error_elem:
-                                logger.debug("   ⚠️ Primer clic produjo error, realizando segundo clic")
-                                submit_btn2 = await page.query_selector('span#address-ui-widgets-form-submit-button input[type="submit"], input[value="Agregar dirección"]')
-                                if submit_btn2:
-                                    async with page.expect_navigation(timeout=NAVIGATION_TIMEOUT*1000):
-                                        await submit_btn2.click()
-                                    logger.debug("   ✅ Segundo clic realizado, navegación detectada")
-                                else:
-                                    raise Exception("Botón desapareció después del primer clic")
-                            else:
-                                # Si no hubo error, asumimos que el primer clic funcionó
-                                logger.debug("   ✅ Dirección agregada sin error")
-                        else:
-                            raise Exception("No se encontró botón de envío")
-
-                        # Verificar resultado
-                        if "addresses" in page.url:
-                            account_data['address'] = "Dirección agregada exitosamente"
-                            logger.debug("   ✅ Dirección agregada")
-                        else:
-                            raise Exception(f"Redirección inesperada a {page.url}")
                     except Exception as e:
                         logger.warning(f"⚠️ Error agregando dirección: {e}")
                         account_data['address'] = f"Error: {e}"
