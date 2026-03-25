@@ -810,6 +810,34 @@ async def create_amazon_account(country_code, add_address_flag=True):
             await smart_goto(page, base_url, wait_until='domcontentloaded', timeout=NAVIGATION_TIMEOUT*1000)
             last_screenshot = await take_screenshot(page, "home_page")
 
+
+            # ----- PASO 7.5: Manejar posible página de bienvenida "Continuar a Compras" -----
+            logger.debug("🛒 [PASO 7.5] Verificando página de bienvenida o redirección...")
+            continue_shopping_selectors = [
+                'input[value="Continuar a Compras"]',
+                'button:has-text("Continuar a Compras")',
+                'a:has-text("Continuar a Compras")',
+                'input[value="Continue to Shopping"]',
+                'button:has-text("Continue to Shopping")',
+                'input[value="Seguir comprando"]',
+                'button:has-text("Seguir comprando")'
+            ]
+            for selector in continue_shopping_selectors:
+                try:
+                    btn = await page.wait_for_selector(selector, state='visible', timeout=2000)
+                    if btn:
+                        logger.debug(f"   ✅ Botón de continuar encontrado: {selector}")
+                        await btn.click()
+                        await page.wait_for_load_state('domcontentloaded', timeout=NAVIGATION_TIMEOUT*1000)
+                        logger.debug("   ✅ Continuar a compras clickeado")
+                        await page.wait_for_timeout(2000)
+                        break
+                except:
+                    continue
+            else:
+                logger.debug("   ℹ️ No se detectó página de bienvenida, continuando normal")
+
+
             # ----- PASO 8: Hacer clic en "Hola, identifícate" -----
             logger.debug("👤 Buscando enlace de inicio de sesión...")
             login_selectors = [
