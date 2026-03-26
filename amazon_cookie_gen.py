@@ -444,8 +444,8 @@ SMS_SERVICES = [
 ]
 
 ACCOUNT_TO_PURCHASE_COUNTRY = {
-    'MX': 'ID',
-    'US': 'ID',
+    'MX': 'MX',
+    'US': 'US',
 }
 
 async def get_phone_number(account_country):
