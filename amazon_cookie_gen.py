@@ -1347,10 +1347,6 @@ async def create_amazon_account(country_code, add_address_flag=True):
                                         }
                                     """)
                                     await page.wait_for_timeout(3000)
-                                    # Verificar si cambió (por ejemplo, que el campo de código postal haya cambiado)
-                                    # Como no hay forma directa, asumimos éxito
-                                    country_changed = True
-                                    logger.debug("   ✅ País cambiado a EE.UU. (JavaScript)")
                             except Exception as e:
                                 logger.debug(f"   Estrategia {strategy} falló: {e}")
                         
