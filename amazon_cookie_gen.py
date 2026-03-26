@@ -312,6 +312,33 @@ FIVESIM_COUNTRY_MAP = {
     'ID': 'indonesia',
 }
 
+async def get_fivesim_prices():
+    """Obtiene precios de 5sim para amazon, ordenados por precio ascendente."""
+    if not FIVESIM_API_KEY:
+        return {}
+    url = "https://5sim.net/v1/guest/prices"
+    try:
+        loop = asyncio.get_running_loop()
+        response = await loop.run_in_executor(None, lambda: requests.get(url, timeout=10))
+        if response.status_code == 200:
+            data = response.json()
+            prices = {}
+            for country, operators in data.items():
+                # Buscar operador 'any' para amazon
+                if 'any' in operators and 'amazon' in operators['any']:
+                    price = operators['any']['amazon']
+                    # Guardar precio en USD
+                    prices[country] = price
+            # Ordenar por precio ascendente
+            sorted_prices = sorted(prices.items(), key=lambda x: x[1])
+            logger.debug(f"📊 5sim precios: {sorted_prices}")
+            return dict(sorted_prices)
+        else:
+            logger.warning(f"⚠️ No se pudo obtener precios de 5sim: {response.status_code}")
+    except Exception as e:
+        logger.warning(f"⚠️ Error obteniendo precios de 5sim: {e}")
+    return {}
+
 async def get_fivesim_number(country_code, product='amazon'):
     if not FIVESIM_API_KEY:
         logger.warning("⚠️ No hay API key de 5sim")
@@ -548,6 +575,13 @@ async def get_phone_number(account_country):
             logger.warning(f"Error con {service['name']}: {e}")
             continue
     return None
+
+
+
+
+
+
+
 
 async def wait_for_sms_code(service_name, service_id, page, max_retries=3, timeout_per_retry=30):
     for attempt in range(max_retries):
@@ -1139,12 +1173,12 @@ async def create_amazon_account(country_code, add_address_flag=True):
             # Obtener el código SMS con timeout de 20 segundos y cancelación si no llega
             sms_code = None
             if service_name == 'hero':
-                sms_code = await get_hero_sms_code(service_id, timeout=20)
+                sms_code = await get_hero_sms_code(service_id, timeout=120)
                 if not sms_code:
                     await cancel_hero_sms(service_id)
-                    raise Exceptsion("Timeout esperando código SMS de Hero")
+                    raise Exception("Timeout esperando código SMS de Hero")
             elif service_name == '5sim':
-                sms_code = await get_fivesim_code(service_id, timeout=20)
+                sms_code = await get_fivesim_code(service_id, timeout=120)
                 if not sms_code:
                     await cancel_fivesim(service_id)
                     raise Exception("Timeout esperando código SMS de 5sim")
