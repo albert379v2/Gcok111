@@ -383,6 +383,26 @@ async def get_fivesim_code(order_id, timeout=180):
             await asyncio.sleep(5)
     return None
 
+
+async def cancel_fivesim(order_id):
+    """Cancela una activación de 5sim para no cobrar."""
+    if not FIVESIM_API_KEY:
+        return False
+    url = f"{FIVESIM_BASE_URL}/user/cancel/{order_id}"
+    headers = {'Authorization': f'Bearer {FIVESIM_API_KEY}', 'Accept': 'application/json'}
+    try:
+        loop = asyncio.get_running_loop()
+        response = await loop.run_in_executor(None, lambda: requests.get(url, headers=headers, timeout=10))
+        if response.status_code == 200:
+            logger.debug(f"📱 5sim: activación {order_id} cancelada")
+            return True
+        else:
+            logger.warning(f"⚠️ 5sim cancel falló: {response.status_code} {response.text}")
+            return False
+    except Exception as e:
+        logger.warning(f"⚠️ Error cancelando 5sim: {e}")
+        return False
+
 async def get_hero_sms_number(country_code, service='am'):
     url = "https://hero-sms.com/stubs/handler_api.php"
     params = {
@@ -437,6 +457,30 @@ async def get_hero_sms_code(activation_id, timeout=180):
             logger.debug(f"Hero SMS waiting error: {e}")
             await asyncio.sleep(5)
     return None
+
+async def cancel_hero_sms(activation_id):
+    """Cancela una activación de Hero SMS (status=8) para reembolso si no se recibió SMS."""
+    if not HERO_SMS_API_KEY:
+        return False
+    url = "https://hero-sms.com/stubs/handler_api.php"
+    params = {
+        'api_key': HERO_SMS_API_KEY,
+        'action': 'setStatus',
+        'id': activation_id,
+        'status': 8
+    }
+    try:
+        loop = asyncio.get_running_loop()
+        response = await loop.run_in_executor(None, lambda: requests.get(url, params=params, timeout=10))
+        if response.status_code == 200:
+            logger.debug(f"📱 Hero SMS: activación {activation_id} cancelada")
+            return True
+        else:
+            logger.warning(f"⚠️ Hero SMS cancel falló: {response.text}")
+            return False
+    except Exception as e:
+        logger.warning(f"⚠️ Error cancelando Hero SMS: {e}")
+        return False
 
 SMS_SERVICES = [
     {'name': 'hero', 'enabled': bool(HERO_SMS_API_KEY), 'get_number': get_hero_sms_number, 'get_code': get_hero_sms_code},
@@ -1092,8 +1136,38 @@ async def create_amazon_account(country_code, add_address_flag=True):
                 else:
                     raise
             
-            # Obtener el código SMS
-            sms_code = await wait_for_sms_code(service_name, service_id, page, max_retries=3, timeout_per_retry=30)
+            # Obtener el código SMS con timeout de 20 segundos y cancelación si no llega
+            sms_code = None
+            if service_name == 'hero':
+                sms_code = await get_hero_sms_code(service_id, timeout=20)
+                if not sms_code:
+                    await cancel_hero_sms(service_id)
+                    raise Exceptsion("Timeout esperando código SMS de Hero")
+            elif service_name == '5sim':
+                sms_code = await get_fivesim_code(service_id, timeout=20)
+                if not sms_code:
+                    await cancel_fivesim(service_id)
+                    raise Exception("Timeout esperando código SMS de 5sim")
+            else:
+                # Por si se agregara otro servicio en el futuro
+                sms_code = await wait_for_sms_code(service_name, service_id, page, max_retries=1, timeout_per_retry=20)
+                if not sms_code:
+                    raise Exception(f"Timeout esperando código SMS de {service_name}")
+
+            # Si llegamos aquí, tenemos código
+            if sms_code:
+                code_input = await page.wait_for_selector('#cvf-input-code', state='visible', timeout=ACTION_TIMEOUT*1000)
+                await code_input.fill(sms_code)
+                logger.debug(f"   ✅ Código SMS ingresado: {sms_code}")
+                verify_btn = await page.query_selector('input[type="submit"], button:has-text("Verificar"), button:has-text("Verify")')
+                if verify_btn:
+                    await verify_btn.click()
+                    await page.wait_for_load_state('domcontentloaded', timeout=NAVIGATION_TIMEOUT*1000)
+                else:
+                    logger.warning("   ⚠️ No se encontró botón de verificar")
+            else:
+                raise Exception("No se pudo obtener código de verificación SMS")
+            
             if sms_code:
                 code_input = await page.wait_for_selector('#cvf-input-code', state='visible', timeout=ACTION_TIMEOUT*1000)
                 await code_input.fill(sms_code)
@@ -1237,7 +1311,7 @@ async def create_amazon_account(country_code, add_address_flag=True):
                                 state_dropdown = await page.wait_for_selector('span.a-button-text[data-action="a-dropdown-button"]', timeout=5000)
                                 await state_dropdown.click()
                                 await page.wait_for_selector('.a-dropdown-options', state='visible', timeout=5000)
-                                state_option = await page.wait_for_selector(f'a:has-text("{data['state']}")', timeout=5000)
+                                state_option = await page.wait_for_selector(f"a:has-text('{data['state']}')", timeout=5000)
                                 await state_option.click()
                                 logger.debug(f"   ✅ Estado seleccionado: {data['state']}")
                             except Exception as e:
