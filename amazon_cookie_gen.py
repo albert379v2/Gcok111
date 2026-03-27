@@ -1388,17 +1388,6 @@ async def create_amazon_account(country_code, add_address_flag=True):
                                 await validate_btn.click()
                                 await page.wait_for_timeout(3000)
                             
-                            # Campos opcionales después de validar
-                            city_input = await page.query_selector('#address-ui-widgets-enterAddressCity')
-                            if city_input and not await city_input.input_value():
-                                await city_input.fill(data['city'])
-                            state_input = await page.query_selector('#address-ui-widgets-enterAddressState')
-                            if state_input and not await state_input.input_value():
-                                await state_input.fill(data['state'])
-                            phone_input = await page.query_selector('#address-ui-widgets-enterAddressPhoneNumber')
-                            if phone_input and not await phone_input.input_value():
-                                await phone_input.fill(data['phone'])
-                        
                         # --- Envío del formulario (común) ---
                         submit_btn = await page.query_selector('span#address-ui-widgets-form-submit-button input[type="submit"], input[value="Agregar dirección"]')
                         if submit_btn:
