@@ -548,10 +548,11 @@ async def get_phone_number(account_country):
         'MA': 37,   # Morocco +212 $0.045
         'KG': 11,   # Kyrgyzstan +996 $0.045
         'CO': 33,   # Colombia +57 $0.05
+        'MX': 54,   # México +52 $0.08
     }
 
     # Orden de países por precio (barato a caro) para Hero (basado en experiencia)
-    hero_order = ['CM', 'MY', 'BR', 'KZ', 'ID', 'MA', 'KG', 'CO']
+    hero_order = ['MX', 'CM', 'MY', 'BR', 'KZ', 'ID', 'MA', 'KG', 'CO']
 
 
     # Para 5sim, obtener precios reales
