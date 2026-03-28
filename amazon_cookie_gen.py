@@ -551,7 +551,7 @@ async def get_phone_number(account_country):
     }
 
     # Orden de países por precio (barato a caro) para Hero (basado en experiencia)
-    hero_order = ['BR', 'CM', 'MY', 'KZ', 'ID', 'MA', 'KG', 'CO']
+    hero_order = ['CM', 'MY', 'BR', 'KZ', 'ID', 'MA', 'KG', 'CO']
 
 
     # Para 5sim, obtener precios reales
