@@ -975,7 +975,7 @@ async def create_amazon_account(country_code, add_address_flag=True):
             # Navegación rápida: solo espera la respuesta del servidor
             await page.goto(base_url, wait_until='commit', timeout=NAVIGATION_TIMEOUT*1000)
             # Espera que aparezca el enlace de login (necesita solo HTML)
-            await page.wait_for_selector('a[data-nav-role="signin"]', timeout=WAIT_TIMEOUT*1000)
+            await page.wait_for_selector('a[data-nav-role="signin"]', timeout=WAIT_TIMEOUT*1000*2)
             # Después de que la página principal esté lista, quita el bloqueo pesado
             await page.unroute('**/*', block_heavy_resources)
             # Ahora aplica el bloqueo ligero para el resto de la navegación (deja CSS)
