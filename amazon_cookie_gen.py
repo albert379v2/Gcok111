@@ -1080,90 +1080,94 @@ async def create_amazon_account(country_code, add_address_flag=True):
             current_country = phone_info['purchase_country']
 
             while phone_attempt <= max_phone_attempts and not phone_success:
-                if phone_attempt == 1:
-                    # Verificar si la URL contiene "claim?" (número ya registrado)
-                    if "claim?" in page.url.lower():
-                        logger.warning(f"⚠️ Número ya registrado (intento {phone_attempt}/{max_phone_attempts}). Intentando cambiar...")
-                        # ESPERAR a que aparezca el enlace "Cambiar" (en lugar de solo consultar)
+                # Verificar si la URL contiene "claim?" (número ya registrado)
+                if "claim?" in page.url.lower():
+                    logger.warning(f"⚠️ Número ya registrado (intento {phone_attempt}/{max_phone_attempts}). Intentando cambiar...")
+                    
+                    # 1. Intentar localizar el enlace "Cambiar" con diferentes selectores
+                    change_link = None
+                    change_selectors = [
+                        '#ap_change_login_claim',                           # ID directo
+                        'a:has-text("Cambiar")',                            # Texto en español
+                        'a:has-text("Change")',                             # Texto en inglés
+                        'a[href*="ap/signin"][href*="prepopulatedLoginId"]' # URL con parámetros
+                    ]
+                    for sel in change_selectors:
                         try:
-                            change_link = await page.wait_for_selector('#ap_change_login_claim', timeout=WAIT_TIMEOUT*1000)
+                            change_link = await page.wait_for_selector(sel, timeout=WAIT_TIMEOUT*1000)
                             if change_link:
-                                await change_link.click()
-                                await page.wait_for_load_state('domcontentloaded')
-                                # Esperar que aparezca de nuevo el campo de teléfono
-                                await page.wait_for_selector(phone_field_selector, state='visible', timeout=WAIT_TIMEOUT*1000)
-                                # Cancelar la activación anterior
-                                if phone_info and service_id:
-                                    if service_name == 'hero':
-                                        await cancel_hero_sms(service_id)
-                                    elif service_name == '5sim':
-                                        await cancel_fivesim(service_id)
-                                # Obtener un nuevo número (mismo servicio/país)
-                                phone_info = await get_phone_number(country_code, force_service=current_service, force_country=current_country)
-                                if not phone_info:
-                                    logger.warning("   ❌ No se pudo obtener otro número, pasando al siguiente intento global.")
-                                    raise Exception("No hay números disponibles para este país/servicio")
-                                phone_number = phone_info['local']
-                                service_id = phone_info['service_id']
-                                service_name = phone_info['service_name']
-                                purchase_country_used = phone_info['purchase_country']
-                                account_data['phone'] = phone_number
-                                account_data['purchase_country'] = purchase_country_used
-                                # Rellenar el nuevo número
-                                await smart_fill(page, phone_field_selector, phone_info['full'])
-                                # Hacer clic en continuar nuevamente
-                                for selector in continue_selectors:
-                                    if await smart_click(page, selector, timeout=ACTION_TIMEOUT*1000, wait_for_navigation=True):
-                                        break
-                                phone_attempt += 1
-                                continue
-                            else:
-                                # No debería pasar porque wait_for_selector lanza excepción si no encuentra
-                                logger.warning("   ⚠️ No se encontró enlace para cambiar número")
-                                raise Exception("No se pudo cambiar de número")
+                                logger.debug(f"   ✅ Enlace 'Cambiar' encontrado con selector: {sel}")
+                                break
                         except Exception as e:
-                            logger.warning(f"   ⚠️ Error al buscar el enlace 'Cambiar': {e}")
-                            raise Exception("No se pudo cambiar de número")
+                            logger.debug(f"   ⚠️ Selector {sel} falló: {e}")
+                            continue
+                    
+                    # 2. Si no se encontró con los selectores, buscar la URL del enlace en el HTML
+                    if not change_link:
+                        logger.debug("   🔍 No se encontró enlace con selectores, extrayendo URL del HTML...")
+                        page_content = await page.content()
+                        # Buscar el href del enlace con id="ap_change_login_claim"
+                        import re
+                        match = re.search(r'<a\s+id="ap_change_login_claim"[^>]*href="([^"]+)"', page_content)
+                        if match:
+                            change_url = match.group(1).replace('&amp;', '&')
+                            logger.debug(f"   🌐 URL extraída: {change_url}")
+                            # Navegar directamente a esa URL
+                            await page.goto(change_url, wait_until='domcontentloaded')
+                            # Esperar a que aparezca el campo de teléfono
+                            await page.wait_for_selector(phone_field_selector, state='visible', timeout=WAIT_TIMEOUT*1000)
+                            # Indicar que hemos cambiado (no usamos change_link pero el flujo continúa)
+                            change_link = True  # Bandera para indicar que se realizó el cambio
+                        else:
+                            logger.warning("   ❌ No se pudo extraer la URL del enlace 'Cambiar'")
+                            raise Exception("No se encontró enlace para cambiar número")
+                    
+                    # 3. Si tenemos un enlace (ya sea por selector o por navegación directa)
+                    if change_link:
+                        # Si el enlace se obtuvo por selector, hacer clic normalmente
+                        if hasattr(change_link, 'click'):
+                            await change_link.click()
+                            await page.wait_for_load_state('domcontentloaded')
+                            # Esperar que aparezca de nuevo el campo de teléfono
+                            await page.wait_for_selector(phone_field_selector, state='visible', timeout=WAIT_TIMEOUT*1000)
+                        # Si ya navegamos directamente, ya estamos en la página correcta
+                        
+                        # Cancelar la activación anterior
+                        if phone_info and service_id:
+                            if service_name == 'hero':
+                                await cancel_hero_sms(service_id)
+                            elif service_name == '5sim':
+                                await cancel_fivesim(service_id)
+                        
+                        # Obtener un nuevo número (mismo servicio/país)
+                        phone_info = await get_phone_number(country_code, force_service=current_service, force_country=current_country)
+                        if not phone_info:
+                            logger.warning("   ❌ No se pudo obtener otro número, pasando al siguiente intento global.")
+                            raise Exception("No hay números disponibles para este país/servicio")
+                        phone_number = phone_info['local']
+                        service_id = phone_info['service_id']
+                        service_name = phone_info['service_name']
+                        purchase_country_used = phone_info['purchase_country']
+                        account_data['phone'] = phone_number
+                        account_data['purchase_country'] = purchase_country_used
+                        
+                        # Rellenar el nuevo número
+                        await smart_fill(page, phone_field_selector, phone_info['full'])
+                        # Hacer clic en continuar nuevamente
+                        continue_clicked = False
+                        for selector in continue_selectors:
+                            if await smart_click(page, selector, timeout=ACTION_TIMEOUT*1000, wait_for_navigation=True):
+                                continue_clicked = True
+                                break
+                        if not continue_clicked:
+                            raise Exception("No se encontró botón Continuar después de cambiar número")
+                        
+                        phone_attempt += 1
+                        continue
                     else:
-                        phone_success = True
+                        raise Exception("No se pudo cambiar de número")
                 else:
-                    # Intentos posteriores (ya hemos cambiado número)
-                    if "claim?" in page.url.lower():
-                        logger.warning(f"⚠️ Nuevo número también registrado (intento {phone_attempt}/{max_phone_attempts}). Volviendo a cambiar...")
-                        try:
-                            change_link = await page.wait_for_selector('#ap_change_login_claim', timeout=WAIT_TIMEOUT*1000)
-                            if change_link:
-                                await change_link.click()
-                                await page.wait_for_load_state('domcontentloaded')
-                                await page.wait_for_selector(phone_field_selector, state='visible', timeout=WAIT_TIMEOUT*1000)
-                                if phone_info and service_id:
-                                    if service_name == 'hero':
-                                        await cancel_hero_sms(service_id)
-                                    elif service_name == '5sim':
-                                        await cancel_fivesim(service_id)
-                                phone_info = await get_phone_number(country_code, force_service=current_service, force_country=current_country)
-                                if not phone_info:
-                                    logger.warning("   ❌ No hay más números, pasando al siguiente intento global.")
-                                    raise Exception("No hay números disponibles para este país/servicio")
-                                phone_number = phone_info['local']
-                                service_id = phone_info['service_id']
-                                service_name = phone_info['service_name']
-                                purchase_country_used = phone_info['purchase_country']
-                                account_data['phone'] = phone_number
-                                account_data['purchase_country'] = purchase_country_used
-                                await smart_fill(page, phone_field_selector, phone_info['full'])
-                                for selector in continue_selectors:
-                                    if await smart_click(page, selector, timeout=ACTION_TIMEOUT*1000, wait_for_navigation=True):
-                                        break
-                                phone_attempt += 1
-                                continue
-                            else:
-                                raise Exception("No se pudo cambiar de número")
-                        except Exception as e:
-                            logger.warning(f"   ⚠️ Error al buscar el enlace 'Cambiar' en reintento: {e}")
-                            raise Exception("No se pudo cambiar de número")
-                    else:
-                        phone_success = True
+                    phone_success = True
 
             if not phone_success:
                 raise Exception("Se agotaron los intentos de cambio de número")
