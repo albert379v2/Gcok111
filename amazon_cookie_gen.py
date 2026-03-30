@@ -523,8 +523,9 @@ async def cancel_hero_sms(activation_id):
         return False
 
 SMS_SERVICES = [
-    {'name': '5sim', 'enabled': bool(FIVESIM_API_KEY), 'get_number': get_fivesim_number, 'get_code': get_fivesim_code},
     {'name': 'hero', 'enabled': bool(HERO_SMS_API_KEY), 'get_number': get_hero_sms_number, 'get_code': get_hero_sms_code},
+    {'name': '5sim', 'enabled': bool(FIVESIM_API_KEY), 'get_number': get_fivesim_number, 'get_code': get_fivesim_code},
+    
     
 ]
 
@@ -553,7 +554,7 @@ async def get_phone_number(account_country):
     }
 
     # Orden de países por precio (barato a caro) para Hero (basado en experiencia)
-    hero_order = ['BR', 'CM', 'MY', 'KZ', 'ID', 'MA', 'KG', 'CO', 'MX' ]
+    hero_order = [ 'CM', 'BR', 'MY', 'KZ', 'ID', 'MA', 'KG', 'CO', 'MX' ]
 
     FIVESIM_MANUAL_ORDER = ['KG', 'PL', 'CO', 'LV', 'PK', 'TJ', 'KE']
 
