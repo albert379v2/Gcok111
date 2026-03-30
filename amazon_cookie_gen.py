@@ -554,7 +554,7 @@ async def get_phone_number(account_country):
     }
 
     # Orden de países por precio (barato a caro) para Hero (basado en experiencia)
-    hero_order = [ 'CM', 'BR', 'MY', 'KZ', 'ID', 'MA', 'KG', 'CO', 'MX' ]
+    hero_order = [ 'MX', 'CM', 'BR', 'MY', 'KZ', 'ID', 'MA', 'KG', 'CO']
 
     FIVESIM_MANUAL_ORDER = ['KG', 'PL', 'CO', 'LV', 'PK', 'TJ', 'KE']
 
@@ -991,22 +991,9 @@ async def create_amazon_account(country_code, add_address_flag=True):
                 logger.debug("   ℹ️ No se detectó página de bienvenida, continuando normal")
 
 
-            # ----- PASO 8: Hacer clic en "Hola, identifícate" -----
             logger.debug("👤 Buscando enlace de inicio de sesión...")
-            login_selectors = [
-                'a[data-nav-role="signin"]',
-                'a.nav-a[data-nav-role="signin"]',
-                'a[data-csa-c-slot-id="nav-link-accountList"]',
-                'a:has-text("Hola, identifícate")',
-                'a:has-text("Hello, Sign in")',
-                'a:has-text("Identifícate")'
-            ]
-            login_found = False
-            for selector in login_selectors:
-                if await smart_click(page, selector, timeout=ACTION_TIMEOUT*1000, wait_for_navigation=True):
-                    login_found = True
-                    break
-            if not login_found:
+            selector = 'a[data-nav-role="signin"]'
+            if not await smart_click(page, selector, timeout=ACTION_TIMEOUT*1000, wait_for_navigation=True):
                 raise Exception("No se encontró enlace de inicio de sesión")
             last_screenshot = await take_screenshot(page, "after_login_click")
 
