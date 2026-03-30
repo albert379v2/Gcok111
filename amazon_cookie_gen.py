@@ -523,10 +523,8 @@ async def cancel_hero_sms(activation_id):
         return False
 
 SMS_SERVICES = [
-    {'name': '5sim', 'enabled': bool(FIVESIM_API_KEY), 'get_number': get_fivesim_number, 'get_code': get_fivesim_code},
     {'name': 'hero', 'enabled': bool(HERO_SMS_API_KEY), 'get_number': get_hero_sms_number, 'get_code': get_hero_sms_code},
-    
-    
+    {'name': '5sim', 'enabled': bool(FIVESIM_API_KEY), 'get_number': get_fivesim_number, 'get_code': get_fivesim_code},
     
 ]
 
@@ -972,17 +970,14 @@ async def create_amazon_account(country_code, add_address_flag=True):
 
             # ----- PASO 7: Navegar a la URL base con bloqueo de recursos -----
             # Después de crear la página
+            base_url = base_urls[country_code]
             await page.route('**/*', block_heavy_resources)   # Bloquea CSS temporalmente
-
             # Navegación rápida: solo espera la respuesta del servidor
             await page.goto(base_url, wait_until='commit', timeout=NAVIGATION_TIMEOUT*1000)
-
             # Espera que aparezca el enlace de login (necesita solo HTML)
             await page.wait_for_selector('a[data-nav-role="signin"]', timeout=WAIT_TIMEOUT*1000)
-
             # Después de que la página principal esté lista, quita el bloqueo pesado
             await page.unroute('**/*', block_heavy_resources)
-
             # Ahora aplica el bloqueo ligero para el resto de la navegación (deja CSS)
             await page.route('**/*', block_resources)
 
