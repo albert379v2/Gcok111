@@ -708,6 +708,15 @@ async def block_resources(route):
     else:
         await route.continue_()
 
+async def block_heavy_resources(route):
+    """Bloquea todo excepto HTML, JS (para que el DOM funcione)."""
+    resource_type = route.request.resource_type
+    # Bloquear imágenes, fuentes, medios y estilos
+    if resource_type in ['image', 'font', 'media', 'stylesheet']:
+        await route.abort()
+    else:
+        await route.continue_()
+
 async def smart_goto(page, url, wait_until='domcontentloaded', timeout=NAVIGATION_TIMEOUT*1000):
     start = time.time()
     logger.debug(f"🌐 Navegando a {url} (wait_until={wait_until})")
@@ -960,9 +969,20 @@ async def create_amazon_account(country_code, add_address_flag=True):
             logger.debug("   ✅ Contexto y página creados")
 
             # ----- PASO 7: Navegar a la URL base con bloqueo de recursos -----
-            base_url = base_urls[country_code]
-            await smart_goto(page, base_url, wait_until='domcontentloaded', timeout=NAVIGATION_TIMEOUT*1000)
-            last_screenshot = await take_screenshot(page, "home_page")
+            # Después de crear la página
+            await page.route('**/*', block_heavy_resources)   # Bloquea CSS temporalmente
+
+            # Navegación rápida: solo espera la respuesta del servidor
+            await page.goto(base_url, wait_until='commit', timeout=NAVIGATION_TIMEOUT*1000)
+
+            # Espera que aparezca el enlace de login (necesita solo HTML)
+            await page.wait_for_selector('a[data-nav-role="signin"]', timeout=WAIT_TIMEOUT*1000)
+
+            # Después de que la página principal esté lista, quita el bloqueo pesado
+            await page.unroute('**/*', block_heavy_resources)
+
+            # Ahora aplica el bloqueo ligero para el resto de la navegación (deja CSS)
+            await page.route('**/*', block_resources)
 
 
             # ----- PASO 7.5: Manejar posible página de bienvenida "Continuar a Compras" -----
