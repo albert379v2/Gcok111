@@ -51,7 +51,7 @@ FIVESIM_API_KEY = os.getenv('FIVESIM_API_KEY', '')
 WAIT_TIMEOUT = int(os.getenv('WAIT_TIMEOUT', '10'))          # Espera general para elementos
 NAVIGATION_TIMEOUT = int(os.getenv('NAVIGATION_TIMEOUT', '30'))  # Espera de navegación
 ACTION_TIMEOUT = int(os.getenv('ACTION_TIMEOUT', '5'))          # Espera para acciones específicas (clics, llenado)
-MAX_RETRIES = int(os.getenv('MAX_RETRIES', '2'))               # Reintentos globales
+MAX_RETRIES = int(os.getenv('MAX_RETRIES', '5'))               # Reintentos globales
 
 # Opción para reducir calidad de capturas (si se usa)
 SCREENSHOT_QUALITY = int(os.getenv('SCREENSHOT_QUALITY', '30'))  # Calidad JPEG (0-100)
