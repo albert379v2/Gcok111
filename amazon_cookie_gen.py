@@ -1672,16 +1672,18 @@ def health():
 def generate():
     if request.method == 'OPTIONS':
         return '', 200
-    if API_KEY:
-        auth = request.headers.get('Authorization', '')
-    if not auth.startswith('Bearer ') or auth[7:] != API_KEY:
-        return jsonify({'success': False, 'error': 'No autorizado'}), 401
 
-    # Extraer token del usuario (del header Authorization)
+    # Obtener el header de autorización
     auth_header = request.headers.get('Authorization', '')
     user_token = None
     if auth_header.startswith('Bearer '):
-        user_token = auth_header[7:]
+        user_token = auth_header[7:]   # extrae el token del usuario
+
+    # Si el servicio tiene una API_KEY configurada, verificar que coincida con el header
+    if API_KEY:
+        expected_auth = f'Bearer {API_KEY}'
+        if auth_header != expected_auth:
+            return jsonify({'success': False, 'error': 'No autorizado'}), 401
 
     data = request.get_json()
     if not data:
@@ -1691,30 +1693,29 @@ def generate():
     if not country:
         return jsonify({'success': False, 'error': 'Falta el parámetro country'}), 400
 
-    # ----- VERIFICACIÓN DE CRÉDITOS (antes de consumir recursos) -----
+    # Verificar créditos si hay token de usuario
     if user_token:
         ok, msg = check_user_credits(user_token, 3)
         if not ok:
             return jsonify({'success': False, 'error': msg}), 402
-    else:
-        # Si no hay token (llamada anónima) podrías rechazar o permitir según tu política
-        return jsonify({'success': False, 'error': 'Se requiere autenticación'}), 401
+    # Si no hay token, podría ser una llamada desde el bot (que ya descuenta aparte) o desde otro servicio
 
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     try:
         result = loop.run_until_complete(generate_cookie_api(country, add_address))
         if result['success'] and user_token:
-            # Descontar créditos después de generar exitosamente
-            success, new_credits = deduct_credits(user_token, 3)  # función que ya tienes
+            success, new_credits = deduct_credits(user_token, 3)
             if not success:
-                # Si falla el descuento (raro), igual devolvemos la cookie pero registramos error
                 logger.error("No se pudieron descontar créditos después de generar cookie")
             else:
                 result['remaining_credits'] = new_credits
         return jsonify(result)
     finally:
         loop.close()
+
+
+
 @app.route('/diagnostic', methods=['GET'])
 def diagnostic():
     return jsonify({
