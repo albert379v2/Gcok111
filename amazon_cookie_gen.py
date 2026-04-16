@@ -761,73 +761,57 @@ async def handle_captcha_if_present(page, step_name="captcha"):
         await page.wait_for_timeout(2000)
         return True
 
-    # ---------- 2. DETECTAR FUNCAPTCHA (ARKOSE) ----------
+      # ---------- 2. FUNCAPTCHA (ARKOSE) ----------
     title = await page.title()
     if "Confirma tu identidad" in title or "Verify your identity" in title:
         logger.warning("⚠️ Página de verificación de identidad con FunCaptcha detectada")
 
-        # Hacer clic en "Iniciar rompecabezas" si aparece
-        start_selectors = [
-            'button:has-text("Iniciar rompecabezas")',
-            'button:has-text("Start puzzle")',
-            'button:has-text("Start")',
-            'input[value="Iniciar rompecabezas"]'
-        ]
-        for sel in start_selectors:
-            try:
-                btn = await page.wait_for_selector(sel, timeout=3000)
-                if btn:
-                    logger.debug("   ✅ Botón 'Iniciar rompecabezas' clickeado")
-                    await btn.click()
-                    await page.wait_for_timeout(2000)
-                    break
-            except:
-                continue
-
-        # Esperar iframe
+        # 2.1 Esperar a que el iframe principal tenga un src (se carga automáticamente)
         iframe = None
-        for _ in range(10):
+        for _ in range(15):  # hasta 30 segundos
             iframe = await page.query_selector('#cvf-aamation-challenge-iframe')
             if iframe:
-                break
+                src = await iframe.get_attribute('src')
+                if src and src != '':
+                    logger.debug("   ✅ Iframe de FunCaptcha cargado correctamente")
+                    break
             await page.wait_for_timeout(2000)
-        if not iframe:
-            screenshot = await take_screenshot(page, "funcaptcha_iframe_not_found")
-            await page.reload(wait_until='domcontentloaded')
-            await page.wait_for_timeout(3000)
-            iframe = await page.query_selector('#cvf-aamation-challenge-iframe')
-            if not iframe:
-                raise Exception(f"No se encontró el iframe del FunCaptcha. Captura: {screenshot[:100]}...")
+        else:
+            screenshot = await take_screenshot(page, "funcaptcha_iframe_not_loaded")
+            raise Exception(f"El iframe no se cargó. Captura: {screenshot[:100]}...")
 
-        logger.debug("   ✅ Iframe de FunCaptcha encontrado")
-
-        # Obtener site_key
+        # 2.2 Extraer site_key del atributo data-external-id en el script
         page_content = await page.content()
         import re
         match = re.search(r'"data-external-id":\s*"([^"]+)"', page_content)
         site_key = match.group(1) if match else None
         if not site_key:
+            # Fallback: intentar desde el iframe
             site_key = await iframe.get_attribute('data-external-id')
         if not site_key:
             screenshot = await take_screenshot(page, "funcaptcha_no_sitekey")
             raise Exception(f"No se pudo obtener site_key. Captura: {screenshot[:100]}...")
 
+        logger.debug(f"   🔑 Site_key extraído: {site_key}")
+
+        # 2.3 Resolver FunCaptcha con 2captcha
         token = solve_funcaptcha(page.url, site_key)
         if not token:
             screenshot = await take_screenshot(page, "funcaptcha_no_token")
             raise Exception(f"No se obtuvo token de 2captcha. Captura: {screenshot[:100]}...")
 
+        # 2.4 Enviar el token y enviar el formulario
         await page.evaluate(f"""
             document.getElementById('cvf_aamation_response_token').value = '{token}';
             document.getElementById('cvf-aamation-challenge-form').submit();
         """)
         await page.wait_for_load_state('domcontentloaded', timeout=30000)
-        logger.debug("   ✅ FunCaptcha resuelto y enviado")
+        logger.debug("   ✅ FunCaptcha resuelto y formulario enviado correctamente")
         return True
 
-    # No se detectó captcha
     logger.debug("   ✅ No se detectó captcha en este paso")
     return False
+
 
 
 
@@ -884,7 +868,7 @@ async def get_phone_number(account_country, force_service=None, force_country=No
 
     # Orden de países por precio (barato a caro) para Hero
     # hero_order = ['CM', 'BR', 'MY', 'KZ', 'ID', 'MA' Da error, 'KG', 'CO', 'MX']
-    hero_order = ['MX', 'CM', 'BR', 'MY', 'KZ', 'ID', 'MA', 'KG', 'CO']  
+    hero_order = ['CM', 'BR', 'MY', 'KZ', 'ID', 'MA', 'KG', 'CO', 'MX']  
 
     # Orden manual para 5sim (si no se pueden obtener precios)
     FIVESIM_MANUAL_ORDER = ['CO', 'LV', 'PK', 'TJ', 'KE', 'MX']
