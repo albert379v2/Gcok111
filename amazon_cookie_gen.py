@@ -570,6 +570,112 @@ SMS_SERVICES = [
     {'name': '5sim', 'enabled': bool(FIVESIM_API_KEY), 'get_number': get_fivesim_number, 'get_code': get_fivesim_code},
 ]
 
+
+
+
+async def handle_captcha_if_present(page, step_name="captcha"):
+    """Detecta y resuelve captcha de coordenadas si aparece.
+    Retorna True si se resolvió correctamente, False si no había captcha.
+    Lanza excepción si hay captcha pero no se puede resolver."""
+    logger.debug(f"🔍 Verificando captcha en paso: {step_name}")
+    await page.wait_for_timeout(2000)
+    content = await page.content()
+    # Detectar frases típicas de captcha de coordenadas
+    if "Resuelve esta adivinanza" in content or "Elija todo" in content or "Selecciona todas las imágenes" in content:
+        logger.warning("⚠️ Captcha de selección de imágenes detectado")
+        await page.wait_for_timeout(2000)
+        
+        # Buscar canvas o imagen
+        canvas_element = await page.query_selector('canvas')
+        img_element = await page.query_selector('img[src*="captcha"]')
+        click_element = None
+        img_path = None
+        
+        if canvas_element:
+            logger.debug("   ✅ Captcha es un canvas, tomando screenshot del elemento")
+            screenshot_bytes = await canvas_element.screenshot()
+            img_path = 'temp_canvas_captcha.png'
+            with open(img_path, 'wb') as f:
+                f.write(screenshot_bytes)
+            click_element = canvas_element
+        elif img_element:
+            logger.debug("   ✅ Captcha es una imagen, descargando...")
+            img_src = await img_element.get_attribute('src')
+            if not img_src:
+                raise Exception("La imagen del captcha no tiene src")
+            img_data = requests.get(img_src, timeout=10).content
+            img_path = 'temp_image_captcha.jpg'
+            with open(img_path, 'wb') as f:
+                f.write(img_data)
+            click_element = img_element
+        else:
+            # Esperar más tiempo por si es dinámico
+            await page.wait_for_timeout(5000)
+            canvas_element = await page.query_selector('canvas')
+            img_element = await page.query_selector('img[src*="captcha"]')
+            if canvas_element:
+                screenshot_bytes = await canvas_element.screenshot()
+                img_path = 'temp_canvas_captcha.png'
+                with open(img_path, 'wb') as f:
+                    f.write(screenshot_bytes)
+                click_element = canvas_element
+            elif img_element:
+                img_src = await img_element.get_attribute('src')
+                img_data = requests.get(img_src, timeout=10).content
+                img_path = 'temp_image_captcha.jpg'
+                with open(img_path, 'wb') as f:
+                    f.write(img_data)
+                click_element = img_element
+            else:
+                raise Exception("No se encontró canvas ni imagen de captcha")
+
+        hint_text = "Haz clic en todas las imágenes que correspondan"
+        coordinates = None
+        if API_KEY_2CAPTCHA:
+            logger.debug("   Intentando con 2captcha API HTTP...")
+            coordinates = solve_2captcha_coordinates(img_path, hint_text)
+            if coordinates:
+                logger.debug(f"✅ 2captcha resolvió coordenadas: {coordinates}")
+        if not coordinates and API_KEY_ANTICAPTCHA:
+            logger.debug("   Intentando con anticaptcha API HTTP...")
+            coordinates = solve_anticaptcha_coordinates(img_path, hint_text)
+            if coordinates:
+                logger.debug(f"✅ anticaptcha resolvió coordenadas: {coordinates}")
+        if not coordinates:
+            raise Exception("No se pudo resolver captcha de coordenadas")
+
+        # Realizar clics
+        box = await click_element.bounding_box()
+        if box:
+            for point in coordinates:
+                try:
+                    abs_x = box['x'] + int(point['x'])
+                    abs_y = box['y'] + int(point['y'])
+                    await page.mouse.click(abs_x, abs_y)
+                    await asyncio.sleep(0.3)
+                except Exception as e:
+                    logger.warning(f"   ⚠️ Error al hacer clic: {e}")
+        else:
+            raise Exception("No se pudo obtener bounding box del captcha")
+
+        # Botón confirmar
+        confirm_btn = await page.query_selector('button:has-text("Confirmar"), input[value="Confirmar"], button[type="submit"]')
+        if confirm_btn:
+            await confirm_btn.click()
+            logger.debug("✅ Clic en botón de confirmar")
+            await page.wait_for_load_state('domcontentloaded', timeout=NAVIGATION_TIMEOUT*1000)
+        else:
+            logger.warning("⚠️ No se encontró botón de confirmar")
+        await page.wait_for_timeout(2000)
+        return True
+    else:
+        logger.debug("   ✅ No se detectó captcha en este paso")
+        return False
+
+
+
+
+
 # ===================================================================
 # FUNCIÓN PRINCIPAL PARA OBTENER NÚMERO (CORREGIDA)
 # ===================================================================
@@ -601,7 +707,7 @@ async def get_phone_number(account_country, force_service=None, force_country=No
 
     # Orden de países por precio (barato a caro) para Hero
     # hero_order = ['CM', 'BR', 'MY', 'KZ', 'ID', 'MA' Da error, 'KG', 'CO', 'MX']
-    hero_order = ['CM', 'BR', 'MY', 'KZ', 'ID', 'MA', 'KG', 'CO', 'MX']  
+    hero_order = ['MX', 'CM', 'BR', 'MY', 'KZ', 'ID', 'MA', 'KG', 'CO']  
 
     # Orden manual para 5sim (si no se pueden obtener precios)
     FIVESIM_MANUAL_ORDER = ['CO', 'LV', 'PK', 'TJ', 'KE', 'MX']
@@ -1260,7 +1366,8 @@ async def create_amazon_account(country_code, add_address_flag=True, max_retries
             last_screenshot = await take_screenshot(page, "despues_proceder")
 
 
-
+            # ----- PASO 11.5: Resolver captcha si aparece antes del envío -----
+            await handle_captcha_if_present(page, step_name="pre_submit")
 
 
             # ----- PASO 12: Llenar formulario de registro -----
@@ -1308,93 +1415,8 @@ async def create_amazon_account(country_code, add_address_flag=True, max_retries
                 logger.warning("⚠️ No se encontró botón de registro final, puede que ya se haya enviado")
             last_screenshot = await take_screenshot(page, "despues_registro")
 
-            # ----- PASO 14: Detectar captcha -----
-            logger.debug("🔍 Verificando captcha después del envío...")
-            if await wait_for_text(page, "Resuelve esta adivinanza", timeout=6*1000) or await wait_for_text(page, "Elija todo", timeout=1*1000):
-                logger.warning("⚠️ Captcha de selección de imágenes detectado")
-                await page.wait_for_timeout(5000)
-                last_screenshot = await take_screenshot(page, "captcha_seleccion")
-                canvas_element = await page.query_selector('canvas')
-                img_element = await page.query_selector('img[src*="captcha"]')
-                click_element = None
-                if canvas_element:
-                    logger.debug("   ✅ Captcha es un canvas, tomando screenshot del elemento")
-                    screenshot_bytes = await canvas_element.screenshot()
-                    img_path = 'temp_canvas_captcha.png'
-                    with open(img_path, 'wb') as f:
-                        f.write(screenshot_bytes)
-                    click_element = canvas_element
-                elif img_element:
-                    logger.debug("   ✅ Captcha es una imagen, descargando...")
-                    img_src = await img_element.get_attribute('src')
-                    if not img_src:
-                        logger.error("La imagen del captcha no tiene src")
-                        raise Exception("Imagen de captcha sin src")
-                    img_data = requests.get(img_src, timeout=10).content
-                    img_path = 'temp_image_captcha.jpg'
-                    with open(img_path, 'wb') as f:
-                        f.write(img_data)
-                    click_element = img_element
-                else:
-                    logger.warning("   ⚠️ No se encontró canvas ni imagen, esperando otros 5 segundos más...")
-                    await page.wait_for_timeout(9000)
-                    canvas_element = await page.query_selector('canvas')
-                    img_element = await page.query_selector('img[src*="captcha"]')
-                    if canvas_element:
-                        screenshot_bytes = await canvas_element.screenshot()
-                        img_path = 'temp_canvas_captcha.png'
-                        with open(img_path, 'wb') as f:
-                            f.write(screenshot_bytes)
-                        click_element = canvas_element
-                    elif img_element:
-                        img_src = await img_element.get_attribute('src')
-                        img_data = requests.get(img_src, timeout=10).content
-                        img_path = 'temp_image_captcha.jpg'
-                        with open(img_path, 'wb') as f:
-                            f.write(img_data)
-                        click_element = img_element
-                    else:
-                        logger.error("❌ No se encontró canvas ni imagen de captcha después de reintentar")
-                        raise Exception("No se pudo encontrar elemento de captcha")
-
-                hint_text = "Haz clic en todas las imágenes que correspondan"
-                coordinates = None
-                if API_KEY_2CAPTCHA:
-                    logger.debug("   Intentando con 2captcha API HTTP...")
-                    coordinates = solve_2captcha_coordinates(img_path, hint_text)
-                    if coordinates:
-                        logger.debug(f"✅ 2captcha resolvió coordenadas: {coordinates}")
-                if not coordinates and API_KEY_ANTICAPTCHA:
-                    logger.debug("   Intentando con anticaptcha API HTTP...")
-                    coordinates = solve_anticaptcha_coordinates(img_path, hint_text)
-                    if coordinates:
-                        logger.debug(f"✅ anticaptcha resolvió coordenadas: {coordinates}")
-                if not coordinates:
-                    raise Exception("No se pudo resolver captcha de coordenadas")
-
-                # Realizar clics
-                box = await click_element.bounding_box()
-                if box:
-                    for point in coordinates:
-                        try:
-                            abs_x = box['x'] + int(point['x'])
-                            abs_y = box['y'] + int(point['y'])
-                            await page.mouse.click(abs_x, abs_y)
-                            await asyncio.sleep(0.3)
-                        except Exception as e:
-                            logger.warning(f"   ⚠️ Error al hacer clic: {e}")
-                else:
-                    logger.warning("No se pudo obtener bounding box del captcha")
-
-                # Botón confirmar
-                confirm_btn = await page.query_selector('button:has-text("Confirmar"), input[value="Confirmar"], button[type="submit"]')
-                if confirm_btn:
-                    await confirm_btn.click()
-                    logger.debug("✅ Clic en botón de confirmar")
-                    await page.wait_for_load_state('domcontentloaded', timeout=NAVIGATION_TIMEOUT*1000)
-                else:
-                    logger.warning("⚠️ No se encontró botón de confirmar")
-                await page.wait_for_timeout(2000)
+            # ----- PASO 14: Resolver captcha después del envío (si aparece) -----
+            await handle_captcha_if_present(page, step_name="post_submit")
 
             # ----- PASO 15: Verificación por SMS -----
             logger.debug("📱 [PASO 15] Verificando página de verificación de número...")
