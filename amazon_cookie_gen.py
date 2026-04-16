@@ -650,6 +650,19 @@ async def handle_captcha_if_present(page, step_name="captcha"):
     logger.debug(f"🔍 Verificando captcha en paso: {step_name}")
     await page.wait_for_timeout(2000)
 
+
+    # Depuración: listar todos los frames
+    frames = page.frames
+    logger.debug(f"📄 Total frames encontrados: {len(frames)}")
+    for i, frame in enumerate(frames):
+        logger.debug(f"   Frame {i}: url={frame.url}, name={frame.name}")
+        # Opcional: obtener el título del frame
+        try:
+            title = await frame.evaluate('document.title')
+            logger.debug(f"       title={title}")
+        except:
+            pass
+
     # Obtener el contenido HTML de la página
     content = await page.content()
 
