@@ -571,58 +571,137 @@ SMS_SERVICES = [
 ]
 
 
-
+def solve_funcaptcha(page_url, site_key):
+    """Resuelve FunCaptcha (Arkose) usando 2captcha API.
+    Retorna el token de solución o None."""
+    if not API_KEY_2CAPTCHA:
+        return None
+    data = {
+        'key': API_KEY_2CAPTCHA,
+        'method': 'funcaptcha',
+        'publickey': site_key,
+        'pageurl': page_url,
+        'json': 1
+    }
+    try:
+        resp = requests.post('http://2captcha.com/in.php', data=data, timeout=30)
+        if resp.status_code == 200:
+            result = resp.json()
+            if result.get('status') == 1:
+                captcha_id = result['request']
+                start_time = time.time()
+                while time.time() - start_time < 120:
+                    time.sleep(5)
+                    res = requests.get(f'http://2captcha.com/res.php?key={API_KEY_2CAPTCHA}&action=get&id={captcha_id}&json=1', timeout=10)
+                    if res.status_code == 200:
+                        res_data = res.json()
+                        if res_data.get('status') == 1:
+                            return res_data['request']  # token
+                        elif res_data.get('request') == 'CAPCHA_NOT_READY':
+                            continue
+                        else:
+                            break
+        return None
+    except Exception as e:
+        logger.warning(f"Error en solve_funcaptcha: {e}")
+        return None
 
 async def handle_captcha_if_present(page, step_name="captcha"):
     """
-    Detecta y resuelve el captcha de coordenadas de Amazon.
+    Detecta y resuelve captchas de Amazon:
+    - FunCaptcha (Arkose) de la página "Confirma tu identidad"
+    - Captcha de coordenadas (imagen/canvas) tradicional
     Retorna True si se resolvió, False si no había captcha.
     Lanza excepción si el captcha está presente pero falla la resolución.
     """
     logger.debug(f"🔍 Verificando captcha en paso: {step_name}")
     await page.wait_for_timeout(2000)
 
-    # Obtener el contenido de la página
-    content = await page.content()
-    
-    # Detectar por el texto exacto del desafío
-    if "Resuelve esta adivinanza para proteger tu cuenta" in content:
-        logger.warning("⚠️ Captcha detectado: 'Resuelve esta adivinanza'")
+    # ---------- 1. Detectar página de FunCaptcha (Arkose) ----------
+    title = await page.title()
+    if "Confirma tu identidad" in title or "Verify your identity" in title:
+        logger.warning("⚠️ Página de verificación de identidad con FunCaptcha detectada")
         
-        # Buscar el botón "Iniciar rompecabezas" y hacer clic si existe
-        boton = await page.query_selector('button:has-text("Iniciar rompecabezas")')
-        if boton:
-            logger.debug("   ✅ Botón 'Iniciar rompecabezas' encontrado, haciendo clic...")
-            await boton.click()
-            await page.wait_for_timeout(3000)  # esperar a que cargue el puzzle
+        # Buscar el iframe del captcha
+        iframe_element = await page.query_selector('#cvf-aamation-challenge-iframe')
+        if not iframe_element:
+            iframe_element = await page.query_selector('iframe[title*="verification puzzle"]')
+        if not iframe_element:
+            # Tomar captura y fallar
+            screenshot = await take_screenshot(page, "funcaptcha_iframe_not_found")
+            raise Exception(f"No se encontró el iframe del FunCaptcha. Captura: {screenshot}")
+        
+        logger.debug("   ✅ Iframe de FunCaptcha encontrado")
+        
+        # Obtener el site_key (data-external-id) del HTML de la página principal
+        page_content = await page.content()
+        import re
+        match = re.search(r'"data-external-id":\s*"([^"]+)"', page_content)
+        site_key = None
+        if match:
+            site_key = match.group(1)
+            logger.debug(f"   🔑 Site key extraído: {site_key}")
         else:
-            logger.debug("   ℹ️ No se encontró botón 'Iniciar rompecabezas', el puzzle ya puede estar visible")
+            # Intentar obtenerlo del atributo del iframe
+            site_key = await iframe_element.get_attribute('data-external-id')
+            if site_key:
+                logger.debug(f"   🔑 Site key del iframe: {site_key}")
+        
+        if not site_key:
+            screenshot = await take_screenshot(page, "funcaptcha_no_sitekey")
+            raise Exception(f"No se pudo obtener site_key para FunCaptcha. Captura: {screenshot}")
+        
+        # Resolver FunCaptcha con 2captcha
+        page_url = page.url
+        token = solve_funcaptcha(page_url, site_key)
+        if not token:
+            screenshot = await take_screenshot(page, "funcaptcha_no_token")
+            raise Exception(f"No se obtuvo token de 2captcha para FunCaptcha. Captura: {screenshot}")
+        
+        logger.debug("   ✅ Token FunCaptcha recibido, enviando formulario...")
+        
+        # Inyectar el token y enviar el formulario
+        await page.evaluate(f"""
+            document.getElementById('cvf_aamation_response_token').value = '{token}';
+            document.getElementById('cvf-aamation-challenge-form').submit();
+        """)
+        
+        # Esperar a que la página se recargue (debería continuar con el registro)
+        await page.wait_for_load_state('domcontentloaded', timeout=30000)
+        logger.debug("   ✅ FunCaptcha resuelto y formulario enviado correctamente")
+        return True
 
-        # Ahora buscar el canvas o imagen del puzzle
+    # ---------- 2. Detectar captcha de coordenadas (viejo) ----------
+    content = await page.content()
+    if "Resuelve esta adivinanza para proteger tu cuenta" in content or "Elija todo" in content:
+        logger.warning("⚠️ Captcha de coordenadas detectado")
+        await page.wait_for_timeout(2000)
+        
+        # Buscar canvas o imagen del captcha
         canvas_element = await page.query_selector('canvas')
         img_element = await page.query_selector('img[src*="captcha"]')
         click_element = None
         img_path = None
-
+        
         if canvas_element:
-            logger.debug("   📸 Captcha tipo canvas, capturando...")
+            logger.debug("   ✅ Captcha tipo canvas, capturando...")
             screenshot_bytes = await canvas_element.screenshot()
             img_path = 'temp_canvas_captcha.png'
             with open(img_path, 'wb') as f:
                 f.write(screenshot_bytes)
             click_element = canvas_element
         elif img_element:
-            logger.debug("   📸 Captcha tipo imagen, descargando...")
+            logger.debug("   ✅ Captcha tipo imagen, descargando...")
             img_src = await img_element.get_attribute('src')
             if not img_src:
-                raise Exception("La imagen del captcha no tiene src")
+                raise Exception("Imagen de captcha sin src")
             img_data = requests.get(img_src, timeout=10).content
             img_path = 'temp_image_captcha.jpg'
             with open(img_path, 'wb') as f:
                 f.write(img_data)
             click_element = img_element
         else:
-            # Último intento: esperar un poco más
+            # Esperar más tiempo por si el captcha es dinámico
             await page.wait_for_timeout(5000)
             canvas_element = await page.query_selector('canvas')
             img_element = await page.query_selector('img[src*="captcha"]')
@@ -640,47 +719,51 @@ async def handle_captcha_if_present(page, step_name="captcha"):
                     f.write(img_data)
                 click_element = img_element
             else:
-                raise Exception("No se encontró canvas ni imagen después de esperar")
-
-        # Resolver coordenadas con el servicio externo
+                screenshot = await take_screenshot(page, "coordinate_captcha_not_found")
+                raise Exception(f"No se encontró canvas ni imagen para captcha de coordenadas. Captura: {screenshot}")
+        
+        # Resolver coordenadas con API externa
         hint_text = "Haz clic en todas las imágenes que contengan el objeto indicado"
         coordinates = None
         if API_KEY_2CAPTCHA:
+            logger.debug("   Intentando resolver coordenadas con 2captcha...")
             coordinates = solve_2captcha_coordinates(img_path, hint_text)
         if not coordinates and API_KEY_ANTICAPTCHA:
+            logger.debug("   Intentando resolver coordenadas con anticaptcha...")
             coordinates = solve_anticaptcha_coordinates(img_path, hint_text)
-
+        
         if not coordinates:
-            raise Exception("No se pudo resolver el captcha de coordenadas")
-
-        # Hacer clic en las coordenadas devueltas
+            screenshot = await take_screenshot(page, "coordinate_captcha_no_solution")
+            raise Exception(f"No se pudo resolver el captcha de coordenadas. Captura: {screenshot}")
+        
+        logger.debug(f"   ✅ Coordenadas obtenidas: {coordinates}")
+        
+        # Obtener bounding box del elemento y hacer clic
         box = await click_element.bounding_box()
-        if box:
-            for point in coordinates:
-                abs_x = box['x'] + int(point['x'])
-                abs_y = box['y'] + int(point['y'])
-                await page.mouse.click(abs_x, abs_y)
-                await asyncio.sleep(0.3)
-        else:
-            raise Exception("No se pudo obtener el bounding box del captcha")
-
-        # Buscar y hacer clic en el botón de confirmar (si existe)
+        if not box:
+            raise Exception("No se pudo obtener bounding box del captcha")
+        
+        for point in coordinates:
+            abs_x = box['x'] + int(point['x'])
+            abs_y = box['y'] + int(point['y'])
+            await page.mouse.click(abs_x, abs_y)
+            await asyncio.sleep(0.3)
+        
+        # Botón de confirmar
         confirm_btn = await page.query_selector('button:has-text("Confirmar"), input[value="Confirmar"], button[type="submit"]')
         if confirm_btn:
             await confirm_btn.click()
-            logger.debug("✅ Captcha enviado")
-            await page.wait_for_load_state('domcontentloaded', timeout=NAVIGATION_TIMEOUT*1000)
+            logger.debug("   ✅ Botón de confirmar clickeado")
+            await page.wait_for_load_state('domcontentloaded', timeout=15000)
         else:
-            logger.warning("⚠️ No se encontró botón de confirmar, puede que ya se haya enviado")
-
+            logger.warning("   ⚠️ No se encontró botón de confirmar, puede que ya se haya enviado")
+        
         await page.wait_for_timeout(2000)
         return True
-
-    else:
-        logger.debug("   ✅ No se detectó captcha en este paso")
-        return False
-
-
+    
+    # No se detectó captcha
+    logger.debug("   ✅ No se detectó captcha en este paso")
+    return False
 
 # ===================================================================
 # FUNCIÓN PRINCIPAL PARA OBTENER NÚMERO (CORREGIDA)
