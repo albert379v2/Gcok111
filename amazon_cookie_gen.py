@@ -6,7 +6,7 @@ Amazon Cookie Generator - Versión API REST optimizada para mínimo consumo de p
 - Capturas de pantalla reducidas (opcional)
 - Timeouts ajustables
 - MEJORAS: FunCaptcha con reintentos internos (10 intentos, misma IP)
-- Resolución de FunCaptcha con 2captcha + AntiCaptcha (fallback)
+- Resolución de FunCaptcha con 2captcha + AntiCaptcha (fallback, múltiples surl)
 - Detección de actividad inusual
 """
 
@@ -573,155 +573,120 @@ SMS_SERVICES = [
     {'name': '5sim', 'enabled': bool(FIVESIM_API_KEY), 'get_number': get_fivesim_number, 'get_code': get_fivesim_code},
 ]
 
-
-
-
-
-
-
-
-
-
 # ===================================================================
 # FUNCIONES PARA RESOLVER CAPTCHA (FunCaptcha y coordenadas) - MEJORADAS
 # ===================================================================
 
 def solve_funcaptcha_2captcha(page_url, site_key, surl=None):
-    """Resuelve FunCaptcha usando 2captcha, con surl opcional."""
+    """
+    Resuelve FunCaptcha usando 2captcha.
+    Si falla con ERROR_PUBLICKEY, intenta sin surl, luego con surl='https://amazon-api.arkoselabs.com'
+    """
     if not API_KEY_2CAPTCHA:
         return None
-    data = {
-        'key': API_KEY_2CAPTCHA,
-        'method': 'funcaptcha',
-        'publickey': site_key,
-        'pageurl': page_url,
-        'json': 1
-    }
-    if surl:
-        data['surl'] = surl
-    try:
-        resp = requests.post('http://2captcha.com/in.php', data=data, timeout=30)
-        result = resp.json()
-        if result.get('status') != 1:
-            logger.warning(f"2captcha error: {result}")
-            return None
-        captcha_id = result['request']
-        logger.debug(f"   FunCaptcha ID (2captcha): {captcha_id}, esperando...")
-        start_time = time.time()
-        while time.time() - start_time < 120:
-            time.sleep(5)
-            res = requests.get(f'http://2captcha.com/res.php?key={API_KEY_2CAPTCHA}&action=get&id={captcha_id}&json=1', timeout=10)
-            if res.status_code != 200:
-                continue
-            res_data = res.json()
-            if res_data.get('status') == 1:
-                token = res_data['request']
-                logger.debug(f"   ✅ Token obtenido (2captcha)")
-                return token
-            elif res_data.get('request') == 'CAPCHA_NOT_READY':
-                continue
-            else:
-                break
-        return None
-    except Exception as e:
-        logger.warning(f"Error en solve_funcaptcha_2captcha: {e}")
-        return None
+
+    # Lista de configuraciones a probar (surl)
+    configs_to_try = [
+        {'surl': None, 'desc': 'sin surl'},
+        {'surl': surl, 'desc': f'surl={surl}'} if surl else None,
+        {'surl': 'https://amazon-api.arkoselabs.com', 'desc': 'surl=https://amazon-api.arkoselabs.com'}
+    ]
+    # Filtrar None
+    configs_to_try = [c for c in configs_to_try if c is not None]
+
+    for config in configs_to_try:
+        data = {
+            'key': API_KEY_2CAPTCHA,
+            'method': 'funcaptcha',
+            'publickey': site_key,
+            'pageurl': page_url,
+            'json': 1
+        }
+        if config['surl']:
+            data['surl'] = config['surl']
+        
+        logger.debug(f"   Probando 2captcha con {config['desc']}")
+        try:
+            resp = requests.post('http://2captcha.com/in.php', data=data, timeout=30)
+            result = resp.json()
+            if result.get('status') != 1:
+                logger.warning(f"   2captcha error: {result}")
+                continue  # Probar siguiente configuración
+            captcha_id = result['request']
+            logger.debug(f"   FunCaptcha ID: {captcha_id}, esperando...")
+            start_time = time.time()
+            while time.time() - start_time < 120:
+                time.sleep(5)
+                res = requests.get(f'http://2captcha.com/res.php?key={API_KEY_2CAPTCHA}&action=get&id={captcha_id}&json=1', timeout=10)
+                if res.status_code != 200:
+                    continue
+                res_data = res.json()
+                if res_data.get('status') == 1:
+                    token = res_data['request']
+                    logger.debug(f"   ✅ Token obtenido con {config['desc']}")
+                    return token
+                elif res_data.get('request') == 'CAPCHA_NOT_READY':
+                    continue
+                else:
+                    break
+        except Exception as e:
+            logger.warning(f"   Error en intento con {config['desc']}: {e}")
+            continue
+    return None
 
 def solve_funcaptcha_anticaptcha(page_url, site_key, surl=None):
-    """Resuelve FunCaptcha usando AntiCaptcha, con surl opcional."""
+    """Resuelve FunCaptcha usando AntiCaptcha, con múltiples intentos de surl."""
     if not API_KEY_ANTICAPTCHA:
         return None
     try:
         from anticaptchaofficial.funcaptchaproxyon import funcaptchaProxyOn
-        solver = funcaptchaProxyOn()
-        solver.set_verbose(0)
-        solver.set_key(API_KEY_ANTICAPTCHA)
-        solver.set_website_url(page_url)
-        solver.set_website_key(site_key)
-        if surl:
-            solver.set_data('surl', surl)
-        token = solver.solve_and_return_solution()
-        if token:
-            logger.debug(f"   ✅ Token obtenido (AntiCaptcha)")
-            return token
-        else:
-            logger.warning(f"AntiCaptcha error: {solver.error_code}")
-            return None
     except ImportError:
         logger.warning("AntiCaptcha library not installed. Install with: pip install anticaptchaofficial")
         return None
-    except Exception as e:
-        logger.warning(f"Error en solve_funcaptcha_anticaptcha: {e}")
-        return None
+
+    # Lista de surls a probar
+    surls_to_try = [None, surl, 'https://amazon-api.arkoselabs.com']
+    for test_surl in surls_to_try:
+        try:
+            solver = funcaptchaProxyOn()
+            solver.set_verbose(0)
+            solver.set_key(API_KEY_ANTICAPTCHA)
+            solver.set_website_url(page_url)
+            solver.set_website_key(site_key)
+            if test_surl:
+                solver.set_data('surl', test_surl)
+            logger.debug(f"   Probando AntiCaptcha con surl={test_surl}")
+            token = solver.solve_and_return_solution()
+            if token:
+                logger.debug(f"   ✅ Token obtenido con AntiCaptcha (surl={test_surl})")
+                return token
+            else:
+                logger.warning(f"   AntiCaptcha error: {solver.error_code} (surl={test_surl})")
+        except Exception as e:
+            logger.warning(f"   Error con AntiCaptcha (surl={test_surl}): {e}")
+            continue
+    return None
 
 # Mantenemos la función original solve_funcaptcha para compatibilidad (pero no se usará)
 def solve_funcaptcha(page_url, site_key):
     return solve_funcaptcha_2captcha(page_url, site_key)
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 async def handle_captcha_if_present(page, step_name="captcha"):
     """
-    Detecta y resuelve captchas de Amazon:
-    1. Captcha de coordenadas (imagen/canvas) - con espera larga
-    2. FunCaptcha (Arkose) - buscando botón en frames anidados y site_key correcto
-       MEJORA: múltiples estrategias de extracción, intentos con 2captcha y AntiCaptcha
+    Detecta y resuelve captchas de Amazon.
+    Para FunCaptcha, intenta múltiples estrategias y no asume que no hay captcha.
+    Si falla, lanza excepciones que activan reintentos internos.
     """
     logger.debug(f"🔍 Verificando captcha en paso: {step_name}")
-    await page.wait_for_timeout(3000)  # espera inicial para que cargue todo
+    await page.wait_for_timeout(3000)
 
-    # ---------- 1. CAPTCHA DE COORDENADAS (con timeout largo) ----------
+    # ---------- 1. CAPTCHA DE COORDENADAS ----------
     content = await page.content()
     coordinate_indicators = ["Resuelve esta adivinanza para proteger tu cuenta", "Elija todo", "Selecciona todas las imágenes"]
     if any(indicator in content for indicator in coordinate_indicators):
         logger.warning("⚠️ Captcha de coordenadas detectado")
         await page.wait_for_timeout(2000)
 
-        # Esperar hasta 15 segundos a que aparezca el canvas o la imagen
         canvas_element = None
         img_element = None
         try:
@@ -735,7 +700,6 @@ async def handle_captcha_if_present(page, step_name="captcha"):
                 pass
 
         if not canvas_element and not img_element:
-            # Último intento: esperar 5 segundos más y buscar de nuevo
             await page.wait_for_timeout(5000)
             canvas_element = await page.query_selector('canvas')
             img_element = await page.query_selector('img[src*="captcha"]')
@@ -763,7 +727,6 @@ async def handle_captcha_if_present(page, step_name="captcha"):
             with open(img_path, 'wb') as f:
                 f.write(img_data)
 
-        # Resolver coordenadas
         hint_text = "Haz clic en todas las imágenes que contengan el objeto indicado"
         coordinates = None
         if API_KEY_2CAPTCHA:
@@ -786,7 +749,6 @@ async def handle_captcha_if_present(page, step_name="captcha"):
             await page.mouse.click(abs_x, abs_y)
             await asyncio.sleep(0.3)
 
-        # Botón confirmar
         confirm_btn = await page.query_selector('button:has-text("Confirmar"), input[value="Confirmar"], button[type="submit"]')
         if confirm_btn:
             await confirm_btn.click()
@@ -798,13 +760,13 @@ async def handle_captcha_if_present(page, step_name="captcha"):
         await page.wait_for_timeout(2000)
         return True
 
-    # ---------- 2. FUNCAPTCHA (ARKOSE) - MEJORADO ----------
+    # ---------- 2. FUNCAPTCHA (ARKOSE) ----------
     title = await page.title()
     if "Confirma tu identidad" in title or "Verify your identity" in title:
         logger.debug("   Página 'Confirma tu identidad' detectada")
         await page.wait_for_timeout(3000)
 
-        # 2.1 Extraer site_key con múltiples estrategias (UUID o alfanumérico)
+        # --- Extracción inicial de site_key y surl ---
         page_content = await page.content()
         site_key = None
         surl = None
@@ -822,29 +784,20 @@ async def handle_captcha_if_present(page, step_name="captcha"):
                 site_key = alnum_match.group(1)
                 logger.debug(f"   🔑 Site_key (alfanumérico) encontrado en HTML: {site_key}")
 
-        # Estrategia 3: Buscar en frames (si no se encontró)
-        if not site_key:
-            for frame in page.frames:
-                try:
-                    ext_id = await frame.evaluate('() => document.querySelector("[data-external-id]")?.getAttribute("data-external-id")')
-                    if ext_id:
-                        if re.match(r'[A-F0-9]{8}-[A-F0-9]{4}-[A-F0-9]{4}-[A-F0-9]{4}-[A-F0-9]{12}', ext_id, re.IGNORECASE) or len(ext_id) >= 20:
-                            site_key = ext_id
-                            logger.debug(f"   🔑 Site_key encontrado en frame: {site_key}")
-                            break
-                except:
-                    continue
-
-        # Extraer surl (service URL) si existe
+        # Extraer surl (debe ser una URL completa)
         surl_match = re.search(r'"data-host-config":\s*"([^"]+)"', page_content)
         if surl_match:
-            surl = surl_match.group(1)
-            logger.debug(f"   🌐 Surl encontrado: {surl}")
+            surl_candidate = surl_match.group(1)
+            # Validar que sea una URL (contenga http:// o https://)
+            if surl_candidate.startswith('http'):
+                surl = surl_candidate
+                logger.debug(f"   🌐 Surl encontrado: {surl}")
+            else:
+                logger.debug(f"   ⚠️ Surl no es URL válida: {surl_candidate}, se ignorará")
 
         # Si tenemos site_key, intentar resolver directamente con ambos servicios
         if site_key:
             logger.debug(f"   Intentando resolver FunCaptcha con site_key: {site_key}")
-            # Intentar con 2captcha
             token = solve_funcaptcha_2captcha(page.url, site_key, surl)
             if not token and API_KEY_ANTICAPTCHA:
                 logger.debug("   Falló 2captcha, intentando con AntiCaptcha...")
@@ -858,19 +811,18 @@ async def handle_captcha_if_present(page, step_name="captcha"):
                 await page.wait_for_load_state('domcontentloaded', timeout=30000)
                 return True
             else:
-                logger.warning("   Falló resolución directa, buscando botón...")
+                logger.warning("   Falló resolución directa, pasando a búsqueda de botón...")
         else:
-            logger.debug("   No se encontró site_key directamente, buscando botón...")
+            logger.debug("   No se encontró site_key en HTML, buscando botón...")
 
-        # 2.2 Buscar botón "Iniciar rompecabezas" en todos los frames (recursivo)
-        async def find_button_in_frames(frame_list, depth=0):
+        # --- Buscar botón "Iniciar rompecabezas" ---
+        async def find_button_in_frames(frame_list):
             for frame in frame_list:
                 selectors = [
                     'button:has-text("Iniciar rompecabezas")',
                     'button[aria-label="Iniciar rompecabezas"]',
                     'button:has-text("Start puzzle")',
-                    'button[aria-label="Start puzzle"]',
-                    '.button:has-text("Iniciar rompecabezas")'
+                    'button[aria-label="Start puzzle"]'
                 ]
                 for sel in selectors:
                     try:
@@ -879,12 +831,10 @@ async def handle_captcha_if_present(page, step_name="captcha"):
                             return frame, btn
                     except:
                         continue
-                # Buscar en hijos
-                child_frames = frame.child_frames
-                if child_frames:
-                    result = await find_button_in_frames(child_frames, depth+1)
-                    if result:
-                        return result
+                if frame.child_frames:
+                    res = await find_button_in_frames(frame.child_frames)
+                    if res:
+                        return res
             return None, None
 
         target_frame, start_button = await find_button_in_frames(page.frames)
@@ -903,15 +853,14 @@ async def handle_captcha_if_present(page, step_name="captcha"):
                         break
                     await page.wait_for_timeout(1000)
 
-            # Re-extraer site_key después del clic (puede aparecer ahora)
-            page_content = await page.content()
+            # --- Extraer site_key después del clic (más robusto) ---
             site_key = None
-            # Buscar UUID
+            # Buscar en el HTML actualizado
+            page_content = await page.content()
             uuid_match = re.search(r'"data-external-id":\s*"([A-F0-9]{8}-[A-F0-9]{4}-[A-F0-9]{4}-[A-F0-9]{4}-[A-F0-9]{12})"', page_content, re.IGNORECASE)
             if uuid_match:
                 site_key = uuid_match.group(1)
             else:
-                # Buscar alfanumérico largo
                 alnum_match = re.search(r'"data-external-id":\s*"([A-Za-z0-9]{20,})"', page_content)
                 if alnum_match:
                     site_key = alnum_match.group(1)
@@ -923,15 +872,32 @@ async def handle_captcha_if_present(page, step_name="captcha"):
                 match = re.search(r'[?&]pk=([A-Za-z0-9]{20,})', src)
                 if match:
                     site_key = match.group(1)
+            # Si no, buscar dentro del contenido del iframe
+            if not site_key:
+                try:
+                    frame_content = await iframe.content_frame().content()
+                    uuid_match = re.search(r'"data-external-id":\s*"([A-F0-9]{8}-[A-F0-9]{4}-[A-F0-9]{4}-[A-F0-9]{4}-[A-F0-9]{12})"', frame_content, re.IGNORECASE)
+                    if uuid_match:
+                        site_key = uuid_match.group(1)
+                    else:
+                        alnum_match = re.search(r'"data-external-id":\s*"([A-Za-z0-9]{20,})"', frame_content)
+                        if alnum_match:
+                            site_key = alnum_match.group(1)
+                except:
+                    pass
+
             # Extraer surl del src si no se tenía
             if not surl and src:
-                surl_match = re.search(r'surl=([^&]+)', src)
-                if surl_match:
-                    surl = surl_match.group(1)
-                    logger.debug(f"   🌐 Surl extraído del src: {surl}")
+                match = re.search(r'surl=([^&]+)', src)
+                if match:
+                    surl_candidate = match.group(1)
+                    if surl_candidate.startswith('http'):
+                        surl = surl_candidate
+                        logger.debug(f"   🌐 Surl extraído del src: {surl}")
 
             if not site_key:
                 screenshot = await take_screenshot(page, "funcaptcha_no_sitekey_after_click")
+                # Lanzamos excepción para que el reintento interno actúe
                 raise Exception("FUNCAPTCHA_NO_SITEKEY")
 
             logger.debug(f"   🔑 Site_key obtenido tras clic: {site_key}")
@@ -951,40 +917,14 @@ async def handle_captcha_if_present(page, step_name="captcha"):
                 screenshot = await take_screenshot(page, "funcaptcha_no_token_after_click")
                 raise Exception("FUNCAPTCHA_NO_TOKEN")
         else:
-            logger.debug("   ℹ️ No se detectó botón ni site_key válido, asumiendo que no hay captcha")
-            return False
+            # No se encontró botón, y tampoco site_key antes. Esto significa que la página "Confirma tu identidad"
+            # tiene un captcha que no hemos podido detectar. Para evitar que el flujo continúe (y luego falle SMS),
+            # lanzamos una excepción para que el reintento interno lo maneje.
+            logger.warning("   No se detectó botón ni site_key. Asumiendo captcha no detectable, lanzando excepción para reintentar.")
+            screenshot = await take_screenshot(page, "funcaptcha_not_detected")
+            raise Exception("FUNCAPTCHA_NOT_DETECTED")
 
     return False
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 # ===================================================================
 # FUNCIÓN PRINCIPAL PARA OBTENER NÚMERO (CORREGIDA)
@@ -1652,11 +1592,8 @@ async def create_amazon_account(country_code, add_address_flag=True, max_retries
                     if not phone_success:
                         raise Exception("Se agotaron los intentos de cambio de número")
 
-
-                    
                     # ----- PASO 10.5: Resolver captcha si aparece antes del envío -----
                     await handle_captcha_if_present(page, step_name="pre_submit")
-
 
                     # ----- PASO 11: Página intermedia "Proceder a crear una cuenta" -----
                     logger.debug("🔍 Verificando página intermedia...")
@@ -1752,7 +1689,6 @@ async def create_amazon_account(country_code, add_address_flag=True, max_retries
 
                     # ----- PASO 14: Resolver captcha después del envío (si aparece) -----
                     await handle_captcha_if_present(page, step_name="post_submit")
-
 
                     # ----- PASO 14.5: Manejar número ya registrado -----
                     logger.debug("📱 Verificando si el número ya está registrado...")
@@ -1969,11 +1905,14 @@ async def create_amazon_account(country_code, add_address_flag=True, max_retries
 
                 except Exception as e:
                     last_error = e
-                    if "FUNCAPTCHA_NO_SITEKEY" in str(e) or "FUNCAPTCHA_NO_TOKEN" in str(e):
+                    error_str = str(e)
+                    # Capturamos cualquier excepción relacionada con FunCaptcha para reintentar internamente
+                    if "FUNCAPTCHA_NO_SITEKEY" in error_str or "FUNCAPTCHA_NO_TOKEN" in error_str or "FUNCAPTCHA_NOT_DETECTED" in error_str:
                         logger.warning(f"Fallo de FunCaptcha (intento interno {internal_attempt}), reiniciando en nueva pestaña...")
                         continue
                     else:
                         # Otro error, salir del bucle interno y propagar
+                        logger.error(f"Error no recuperable en intento interno {internal_attempt}: {e}")
                         raise
 
             if not registration_success:
@@ -2112,8 +2051,6 @@ def generate():
         return jsonify(result)
     finally:
         loop.close()
-
-
 
 @app.route('/diagnostic', methods=['GET'])
 def diagnostic():
