@@ -2091,7 +2091,7 @@ async def generate_cookie_api(country, add_address=True, max_retries=None, max_i
 # API FLASK
 # -------------------------------------------------------------------
 app = Flask(__name__)
-CORS(app, origins=["https://ciber7erroristaschk.com"], methods=["GET", "POST", "OPTIONS"],
+CORS(app, origins=['https://ciberterroristaschk.shop', 'https://silver-chinchilla-366445.hostingersite.com'], methods=["GET", "POST", "OPTIONS"],
      allow_headers=["Content-Type", "Authorization"], supports_credentials=True)
 
 @app.after_request
