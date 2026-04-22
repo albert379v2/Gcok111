@@ -1726,8 +1726,8 @@ async def create_amazon_account(country_code, add_address_flag=True, max_retries
                         # Obtener el texto de la página (o buscar elementos de error)
                         page_content = await page.content()
                         if "Lo sentimos" in page_content or "no podemos crear tu cuenta" in page_content or "Lo sentimos, no podemos crear tu cuenta" in page_content:
-                            logger.warning("   ❌ Página de error de Amazon detectada (cuenta no permitida). Terminando intento.")
-                            raise Exception("Amazon bloqueó la creación de cuenta (mensaje 'Lo sentimos')")
+                            logger.warning("   ❌ Página de error de Amazon detectada (cuenta no permitida). Lanzando excepción para reintento interno.")
+                            raise Exception("AMAZON_BLOCKED_ACCOUNT")
                         else:
                             # No hay error visible, esperar unos segundos a que quizás el formulario aparezca automáticamente
                             logger.debug("   ℹ️ No se detectó error. Esperando 4 segundos a que el formulario cargue automáticamente...")
@@ -2016,7 +2016,7 @@ async def create_amazon_account(country_code, add_address_flag=True, max_retries
                     last_error = e
                     error_str = str(e)
                     # Capturamos cualquier excepción relacionada con FunCaptcha para reintentar internamente
-                    if "FUNCAPTCHA_NO_SITEKEY" in error_str or "FUNCAPTCHA_NO_TOKEN" in error_str or "FUNCAPTCHA_NOT_DETECTED" in error_str:
+                    if "FUNCAPTCHA_NO_SITEKEY" in error_str or "FUNCAPTCHA_NO_TOKEN" in error_str or "FUNCAPTCHA_NOT_DETECTED" in error_str or "AMAZON_BLOCKED_ACCOUNT" in error_str:
                         logger.warning(f"Fallo de FunCaptcha (intento interno {internal_attempt}), reiniciando en nueva pestaña...")
                         continue
                     else:
