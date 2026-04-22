@@ -50,6 +50,8 @@ API_HOST = os.getenv('API_HOST', '0.0.0.0')
 API_PORT = int(os.getenv('API_PORT', '8080'))
 API_KEY = os.getenv('API_KEY', '')
 FIVESIM_API_KEY = os.getenv('FIVESIM_API_KEY', '')
+SERVICE_API_KEY = os.getenv('SERVICE_API_KEY', '')
+API_BASE_URL = os.getenv('API_BASE_URL', '')
 
 # ----- Timeouts configurables (en segundos) -----
 WAIT_TIMEOUT = int(os.getenv('WAIT_TIMEOUT', '10'))          # Espera general para elementos
@@ -151,6 +153,21 @@ logger = logging.getLogger(__name__)
 # -------------------------------------------------------------------
 # FUNCIONES AUXILIARES
 # -------------------------------------------------------------------
+def is_service_enabled():
+    """Consulta el estado del interruptor en CheckerCT."""
+    try:
+        headers = {'x-api-key': SERVICE_API_KEY}
+        response = requests.get(f"{API_BASE_URL}/api/admin/service-status-for-generator", headers=headers, timeout=5)
+        if response.status_code == 200:
+            data = response.json()
+            return data.get('enabled', True)
+        else:
+            logger.warning(f"No se pudo obtener estado: {response.status_code}")
+            return True  # Por defecto activo si falla
+    except Exception as e:
+        logger.warning(f"Error consultando estado: {e}")
+        return True
+    
 def test_proxy(session, max_retries=3):
     """Prueba la conectividad del proxy y retorna la IP pública, con reintentos."""
     for attempt in range(max_retries):
@@ -186,26 +203,24 @@ def get_str(string, start, end, occurrence=1):
 
 import requests
 
-
 def check_user_credits(token, required=3):
-    """Verifica que el usuario tenga al menos 'required' créditos."""
-    db_api_url = "https://p01--basedatos--vwr6mdxp7dhn.code.run/api/user/credits"
+    """Verifica que el usuario tenga al menos 'required' créditos y devuelve su rol."""
+    db_api_url = f"{API_BASE_URL}/api/user/credits"
     headers = {'Authorization': f'Bearer {token}'}
     try:
         response = requests.get(db_api_url, headers=headers, timeout=10)
         if response.status_code == 200:
             data = response.json()
             credits = data.get('credits', 0)
+            role = data.get('role', 'user')
             if credits >= required:
-                return True, credits
+                return True, credits, role
             else:
-                return False, f"Créditos insuficientes. Tienes {credits}, se requieren {required}."
+                return False, f"Créditos insuficientes. Tienes {credits}, se requieren {required}.", role
         else:
-            return False, f"Error al verificar créditos: {response.status_code}"
+            return False, f"Error al verificar créditos: {response.status_code}", None
     except Exception as e:
-        return False, f"Error de conexión: {str(e)}"
-
-
+        return False, f"Error de conexión: {str(e)}", None
 
 def deduct_credits(token, amount=3):
     """Llama a la API de base de datos para descontar créditos del usuario autenticado."""
@@ -2129,11 +2144,21 @@ def generate():
 
     # Verificar créditos si hay token de usuario
     if user_token:
-        ok, msg = check_user_credits(user_token, 3)
+        ok, msg = check_user_credits(user_token, 4)
         if not ok:
             return jsonify({'success': False, 'error': msg}), 402
     # Si no hay token, podría ser una llamada desde el bot (que ya descuenta aparte) o desde otro servicio
+    else:
+        # Si no hay token, es una llamada desde el bot (que ya descuenta aparte)
+        role = None  # No sabemos el rol, pero el bot ya maneja créditos
 
+    # Verificar interruptor global (solo si no es admin)
+    if role != 'admin':
+        enabled = is_service_enabled()
+
+        
+    if not enabled:
+        return jsonify({'success': False, 'error': 'Servicio deshabilitado temporalmente. Contacta al administrador.'}), 503
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     try:
