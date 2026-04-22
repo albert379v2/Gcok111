@@ -30,6 +30,8 @@ RUN pip install --no-cache-dir anticaptchaofficial>=1.0.5
 # Instalar nest_asyncio, Flask, CORS, gunicorn
 RUN pip install --no-cache-dir nest_asyncio>=1.5.0 flask>=2.3.0 flask-cors>=4.0.0 gunicorn>=21.2.0
 
+RUN pip install --no-cache-dir --force-reinstall anticaptchaofficial
+
 # Copiar el script
 COPY amazon_cookie_gen.py .
 

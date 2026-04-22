@@ -449,13 +449,26 @@ def solve_funcaptcha_anticaptcha(page_url, site_key, surl=None):
 
 async def extract_site_key_robust(page):
     """
-    Extrae el site_key de la página 'Confirma tu identidad' usando múltiples estrategias.
+    Extrae el site_key de la página 'Confirma tu identidad' usando múltiples estrategias,
+    incluyendo esperar a que el iframe cargue su contenido.
     Retorna (site_key, surl)
     """
     site_key = None
     surl = None
 
-    # Estrategia 1: Buscar en el script de ACIC (data-external-id) - UUID o alfanumérico
+    # --- Estrategia 0: Esperar a que el iframe principal tenga un src válido ---
+    iframe = None
+    for _ in range(10):  # hasta 10 segundos
+        iframe = await page.query_selector('#cvf-aamation-challenge-iframe')
+        if iframe:
+            src = await iframe.get_attribute('src')
+            if src and src != 'about:blank':
+                break
+        await page.wait_for_timeout(1000)
+    else:
+        logger.debug("   No se encontró iframe con src válido después de esperar")
+
+    # --- Estrategia 1: Buscar en el script de ACIC (data-external-id) ---
     page_content = await page.content()
     # UUID con guiones
     uuid_match = re.search(r'"data-external-id":\s*"([A-F0-9]{8}-[A-F0-9]{4}-[A-F0-9]{4}-[A-F0-9]{4}-[A-F0-9]{12})"', page_content, re.IGNORECASE)
@@ -469,8 +482,7 @@ async def extract_site_key_robust(page):
             site_key = alnum_match.group(1)
             logger.debug(f"   Site_key (alfanumérico) desde script: {site_key}")
 
-    # Estrategia 2: Buscar en el iframe #cvf-aamation-challenge-iframe
-    iframe = await page.query_selector('#cvf-aamation-challenge-iframe')
+    # --- Estrategia 2: Buscar en el iframe (atributo o src) ---
     if iframe:
         # Atributo data-external-id
         if not site_key:
@@ -494,7 +506,7 @@ async def extract_site_key_robust(page):
                 else:
                     logger.debug(f"   Surl no válido: {surl_candidate}")
 
-    # Estrategia 3: Buscar en frames anidados (game-core-frame)
+    # --- Estrategia 3: Buscar en frames anidados (game-core-frame) ---
     for frame in page.frames:
         if 'game-core' in frame.name or 'arkoselabs' in frame.url:
             try:
@@ -510,8 +522,21 @@ async def extract_site_key_robust(page):
                     if match and not site_key:
                         site_key = match.group(1)
                         logger.debug(f"   Site_key desde frame url pk: {site_key}")
-            except:
-                pass
+                    # También buscar surl en el frame
+                    surl_match = re.search(r'surl=([^&]+)', frame_url)
+                    if surl_match and surl_match.group(1).startswith('http'):
+                        surl = surl_match.group(1)
+                        logger.debug(f"   Surl desde frame: {surl}")
+            except Exception as e:
+                logger.debug(f"   Error accediendo a frame: {e}")
+
+    # --- Estrategia 4: Si aún no hay site_key, intentar obtenerlo de la URL de la página (a veces viene en 'public_key') ---
+    if not site_key:
+        current_url = page.url
+        match = re.search(r'[?&]public_key=([A-Za-z0-9-]+)', current_url)
+        if match:
+            site_key = match.group(1)
+            logger.debug(f"   Site_key desde URL: {site_key}")
 
     return site_key, surl
 
@@ -627,24 +652,21 @@ async def handle_captcha_if_present(page, step_name="captcha"):
                 logger.warning("   Se alcanzó el máximo de rondas para captcha de coordenadas")
         return True
 
-    # ---------- 2. FUNCAPTCHA (ARKOSE) ----------
+    # ---------- 2. FUNCAPTCHA (ARKOSE) - MEJORADO ----------
     title = await page.title()
     if "Confirma tu identidad" in title or "Verify your identity" in title:
         logger.debug("   Página 'Confirma tu identidad' detectada")
         await page.wait_for_timeout(3000)
 
-        # --- Extraer site_key y surl de forma robusta ---
+        # --- Extracción robusta de site_key y surl ---
         site_key, surl = await extract_site_key_robust(page)
 
-        # Si tenemos site_key, intentar resolver directamente
         if site_key:
             logger.debug(f"   Intentando resolver FunCaptcha con site_key: {site_key}")
             token = solve_funcaptcha_2captcha(page.url, site_key, surl)
             if not token and API_KEY_ANTICAPTCHA:
-                logger.debug("   Falló 2captcha, intentando con AntiCaptcha...")
                 token = solve_funcaptcha_anticaptcha(page.url, site_key, surl)
             if token:
-                logger.debug("   ✅ Token obtenido, enviando formulario...")
                 await page.evaluate(f"""
                     document.getElementById('cvf_aamation_response_token').value = '{token}';
                     document.getElementById('cvf-aamation-challenge-form').submit();
@@ -654,33 +676,28 @@ async def handle_captcha_if_present(page, step_name="captcha"):
             else:
                 logger.warning("   Falló resolución directa, pasando a búsqueda de botón...")
         else:
-            logger.debug("   No se encontró site_key, buscando botón...")
+            logger.debug("   No se encontró site_key, buscando botón 'Iniciar rompecabezas'...")
 
-        # --- Buscar botón "Iniciar rompecabezas" ---
-        async def find_button_in_frames(frame_list):
-            for frame in frame_list:
-                selectors = [
-                    'button:has-text("Iniciar rompecabezas")',
-                    'button[aria-label="Iniciar rompecabezas"]',
-                    'button:has-text("Start puzzle")',
-                    'button[aria-label="Start puzzle"]'
-                ]
-                for sel in selectors:
-                    try:
-                        btn = await frame.query_selector(sel)
-                        if btn:
-                            return frame, btn
-                    except:
-                        continue
-                if frame.child_frames:
-                    res = await find_button_in_frames(frame.child_frames)
-                    if res:
-                        return res
-            return None, None
+        # --- Buscar botón "Iniciar rompecabezas" con espera mejorada ---
+        button_selectors = [
+            'button:has-text("Iniciar rompecabezas")',
+            'button[aria-label="Iniciar rompecabezas"]',
+            'button:has-text("Start puzzle")',
+            'button[aria-label="Start puzzle"]',
+            '.button:has-text("Iniciar rompecabezas")'
+        ]
+        start_button = None
+        for sel in button_selectors:
+            try:
+                start_button = await page.wait_for_selector(sel, timeout=10000)
+                if start_button:
+                    logger.debug(f"   Botón 'Iniciar rompecabezas' encontrado con selector: {sel}")
+                    break
+            except:
+                continue
 
-        target_frame, start_button = await find_button_in_frames(page.frames)
         if start_button:
-            logger.debug("   ✅ Botón 'Iniciar rompecabezas' encontrado, haciendo clic...")
+            logger.debug("   Haciendo clic en el botón...")
             await start_button.click()
             await page.wait_for_timeout(5000)
 
@@ -694,20 +711,21 @@ async def handle_captcha_if_present(page, step_name="captcha"):
                         break
                     await page.wait_for_timeout(1000)
 
-            # Extraer site_key después del clic (usando la misma función robusta)
+            # Re-extraer site_key después del clic
             site_key, surl = await extract_site_key_robust(page)
             if not site_key:
                 # Intentar extraer del iframe directamente
-                site_key = await iframe.get_attribute('data-external-id')
-                if not site_key and src:
-                    match = re.search(r'[?&]pk=([A-Za-z0-9]{20,})', src)
-                    if match:
-                        site_key = match.group(1)
+                if iframe:
+                    site_key = await iframe.get_attribute('data-external-id')
+                    if not site_key and src:
+                        match = re.search(r'[?&]pk=([A-Za-z0-9]{20,})', src)
+                        if match:
+                            site_key = match.group(1)
             if not site_key:
                 screenshot = await take_screenshot(page, "funcaptcha_no_sitekey_after_click")
                 raise Exception("FUNCAPTCHA_NO_SITEKEY")
 
-            logger.debug(f"   🔑 Site_key obtenido tras clic: {site_key}")
+            logger.debug(f"   Site_key obtenido tras clic: {site_key}")
             token = solve_funcaptcha_2captcha(page.url, site_key, surl)
             if not token and API_KEY_ANTICAPTCHA:
                 token = solve_funcaptcha_anticaptcha(page.url, site_key, surl)
@@ -723,9 +741,24 @@ async def handle_captcha_if_present(page, step_name="captcha"):
                 screenshot = await take_screenshot(page, "funcaptcha_no_token_after_click")
                 raise Exception("FUNCAPTCHA_NO_TOKEN")
         else:
-            # Si no se encontró botón y tampoco site_key, puede que el captcha ya esté activo.
-            # Forzamos una excepción para reintentar internamente.
-            logger.warning("   No se detectó botón ni site_key. Lanzando excepción para reintentar.")
+            # Si no hay botón y tampoco site_key, puede que el captcha ya esté activo sin botón
+            # Forzamos una espera adicional y volvemos a extraer site_key
+            logger.debug("   No se encontró botón. Esperando 5 segundos y reintentando extracción...")
+            await page.wait_for_timeout(5000)
+            site_key, surl = await extract_site_key_robust(page)
+            if site_key:
+                logger.debug(f"   Site_key encontrado tras espera: {site_key}")
+                token = solve_funcaptcha_2captcha(page.url, site_key, surl)
+                if not token and API_KEY_ANTICAPTCHA:
+                    token = solve_funcaptcha_anticaptcha(page.url, site_key, surl)
+                if token:
+                    await page.evaluate(f"""
+                        document.getElementById('cvf_aamation_response_token').value = '{token}';
+                        document.getElementById('cvf-aamation-challenge-form').submit();
+                    """)
+                    await page.wait_for_load_state('domcontentloaded', timeout=30000)
+                    return True
+            logger.warning("   No se detectó botón ni site_key después de espera. Lanzando excepción para reintentar.")
             screenshot = await take_screenshot(page, "funcaptcha_not_detected")
             raise Exception("FUNCAPTCHA_NOT_DETECTED")
 
