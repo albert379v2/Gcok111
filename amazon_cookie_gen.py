@@ -558,11 +558,11 @@ async def extract_site_key_robust(page):
 
 
 async def solve_coordinate_captcha(page, step_name="coordinate", round_num=1):
-    """Resuelve un captcha de coordenadas (canvas o imagen). Retorna True si resuelto."""
+    """Resuelve captcha de coordenadas usando ambos servicios en paralelo, toma el más rápido."""
     logger.debug(f"   Resolviendo captcha de coordenadas en paso: {step_name} (ronda {round_num})")
     await page.wait_for_timeout(1000)
 
-    # Buscar canvas o imagen con reintentos (hasta 3 veces)
+    # Buscar canvas o imagen con reintentos
     click_element = None
     for attempt in range(3):
         canvas_element = await page.query_selector('canvas')
@@ -576,12 +576,12 @@ async def solve_coordinate_captcha(page, step_name="coordinate", round_num=1):
             logger.debug(f"   Imagen encontrada en intento {attempt+1}")
             break
         await page.wait_for_timeout(1000)
-    
+
     if not click_element:
         screenshot = await take_screenshot(page, f"{step_name}_coord_{round_num}_element_not_found")
         raise Exception(f"No se encontró canvas ni imagen en ronda {round_num}. Captura: {screenshot[:100]}...")
 
-    # Esperar a que el elemento sea visible y tenga bounding box (hasta 5 intentos)
+    # Esperar bounding box válido
     box = None
     for attempt in range(5):
         try:
@@ -614,13 +614,42 @@ async def solve_coordinate_captcha(page, step_name="coordinate", round_num=1):
     # Tomar screenshot antes de resolver
     await take_screenshot(page, f"{step_name}_coord_{round_num}_before_solve")
 
-    # Resolver con API externa
     hint_text = "Haz clic en todas las imágenes que contengan el objeto indicado"
-    coordinates = None
+
+    # Función para ejecutar con 2captcha
+    async def solve_2captcha_async():
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, solve_2captcha_coordinates, img_path, hint_text)
+
+    # Función para ejecutar con anticaptcha
+    async def solve_anticaptcha_async():
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, solve_anticaptcha_coordinates, img_path, hint_text)
+
+    # Ejecutar ambos en paralelo, tomar el que termine primero
+    tasks = []
     if API_KEY_2CAPTCHA:
-        coordinates = solve_2captcha_coordinates(img_path, hint_text)
-    if not coordinates and API_KEY_ANTICAPTCHA:
-        coordinates = solve_anticaptcha_coordinates(img_path, hint_text)
+        tasks.append(solve_2captcha_async())
+    if API_KEY_ANTICAPTCHA:
+        tasks.append(solve_anticaptcha_async())
+
+    if not tasks:
+        raise Exception("No hay servicios de captcha configurados")
+
+    # Timeout de 50 segundos (para no exceder el límite de Amazon)
+    done, pending = await asyncio.wait(tasks, timeout=50, return_when=asyncio.FIRST_COMPLETED)
+    coordinates = None
+    for task in done:
+        try:
+            coords = task.result()
+            if coords:
+                coordinates = coords
+                break
+        except:
+            pass
+    # Cancelar tareas pendientes
+    for task in pending:
+        task.cancel()
 
     if not coordinates:
         screenshot = await take_screenshot(page, f"{step_name}_coord_{round_num}_no_solution")
@@ -647,6 +676,7 @@ async def solve_coordinate_captcha(page, step_name="coordinate", round_num=1):
     await page.wait_for_timeout(1000)
     await take_screenshot(page, f"{step_name}_coord_{round_num}_after_solve")
     return True
+
 
 
 async def handle_captcha_if_present(page, step_name="captcha"):
