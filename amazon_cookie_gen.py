@@ -555,44 +555,54 @@ async def extract_site_key_robust(page):
 
     return site_key, surl
 
+
+
 async def solve_coordinate_captcha(page, step_name="coordinate", round_num=1):
     """Resuelve un captcha de coordenadas (canvas o imagen). Retorna True si resuelto."""
     logger.debug(f"   Resolviendo captcha de coordenadas en paso: {step_name} (ronda {round_num})")
-    await page.wait_for_timeout(1000)  # espera breve
+    await page.wait_for_timeout(1000)
 
-    # Buscar canvas o imagen (timeout reducido a 8 segundos)
-    canvas_element = None
-    img_element = None
-    try:
-        canvas_element = await page.wait_for_selector('canvas', timeout=8000)
-    except:
-        pass
-    if not canvas_element:
-        try:
-            img_element = await page.wait_for_selector('img[src*="captcha"]', timeout=8000)
-        except:
-            pass
-
-    if not canvas_element and not img_element:
-        # Intentar de nuevo después de 2 segundos
-        await page.wait_for_timeout(2000)
+    # Buscar canvas o imagen con reintentos (hasta 3 veces)
+    click_element = None
+    for attempt in range(3):
         canvas_element = await page.query_selector('canvas')
         img_element = await page.query_selector('img[src*="captcha"]')
-        if not canvas_element and not img_element:
-            screenshot = await take_screenshot(page, f"{step_name}_coord_{round_num}_not_found")
-            raise Exception(f"No se encontró canvas ni imagen en ronda {round_num}. Captura: {screenshot[:100]}...")
+        if canvas_element:
+            click_element = canvas_element
+            logger.debug(f"   Canvas encontrado en intento {attempt+1}")
+            break
+        elif img_element:
+            click_element = img_element
+            logger.debug(f"   Imagen encontrada en intento {attempt+1}")
+            break
+        await page.wait_for_timeout(1000)
+    
+    if not click_element:
+        screenshot = await take_screenshot(page, f"{step_name}_coord_{round_num}_element_not_found")
+        raise Exception(f"No se encontró canvas ni imagen en ronda {round_num}. Captura: {screenshot[:100]}...")
 
-    click_element = canvas_element if canvas_element else img_element
-    img_path = None
+    # Esperar a que el elemento sea visible y tenga bounding box (hasta 5 intentos)
+    box = None
+    for attempt in range(5):
+        try:
+            box = await click_element.bounding_box()
+            if box and box['width'] > 0 and box['height'] > 0:
+                logger.debug(f"   Bounding box obtenido: {box}")
+                break
+        except:
+            pass
+        await page.wait_for_timeout(500)
+    if not box:
+        screenshot = await take_screenshot(page, f"{step_name}_coord_{round_num}_no_bbox")
+        raise Exception(f"No se obtuvo bounding box para el captcha en ronda {round_num}. Captura: {screenshot[:100]}...")
 
-    if canvas_element:
-        logger.debug("   Captcha tipo canvas, capturando...")
+    # Capturar imagen del captcha
+    if click_element == canvas_element:
         screenshot_bytes = await canvas_element.screenshot()
         img_path = f'temp_canvas_captcha_{round_num}.png'
         with open(img_path, 'wb') as f:
             f.write(screenshot_bytes)
     else:
-        logger.debug("   Captcha tipo imagen, descargando...")
         img_src = await img_element.get_attribute('src')
         if not img_src:
             raise Exception("Imagen de captcha sin src")
@@ -601,9 +611,10 @@ async def solve_coordinate_captcha(page, step_name="coordinate", round_num=1):
         with open(img_path, 'wb') as f:
             f.write(img_data)
 
-    # Tomar screenshot de la página antes de resolver (para depuración)
+    # Tomar screenshot antes de resolver
     await take_screenshot(page, f"{step_name}_coord_{round_num}_before_solve")
 
+    # Resolver con API externa
     hint_text = "Haz clic en todas las imágenes que contengan el objeto indicado"
     coordinates = None
     if API_KEY_2CAPTCHA:
@@ -616,30 +627,28 @@ async def solve_coordinate_captcha(page, step_name="coordinate", round_num=1):
         raise Exception(f"No se pudo resolver captcha de coordenadas en ronda {round_num}. Captura: {screenshot[:100]}...")
 
     logger.debug(f"   Coordenadas obtenidas (ronda {round_num}): {coordinates}")
-    box = await click_element.bounding_box()
-    if not box:
-        raise Exception("No se obtuvo bounding box")
 
-    # Realizar clics con menos pausa
+    # Realizar clics
     for point in coordinates:
         abs_x = box['x'] + int(point['x'])
         abs_y = box['y'] + int(point['y'])
         await page.mouse.click(abs_x, abs_y)
-        await asyncio.sleep(0.2)  # reducido de 0.3 a 0.2
+        await asyncio.sleep(0.2)
 
-    # Botón confirmar (espera reducida)
+    # Botón confirmar
     confirm_btn = await page.query_selector('button:has-text("Confirmar"), input[value="Confirmar"], button[type="submit"]')
     if confirm_btn:
         await confirm_btn.click()
         logger.debug(f"   Botón de confirmar clickeado (ronda {round_num})")
-        await page.wait_for_load_state('domcontentloaded', timeout=10000)  # reducido de 15 a 10 seg
+        await page.wait_for_load_state('domcontentloaded', timeout=10000)
     else:
-        logger.warning(f"   No se encontró botón de confirmar en ronda {round_num}, puede que ya se haya enviado")
+        logger.warning(f"   No se encontró botón de confirmar en ronda {round_num}")
 
-    await page.wait_for_timeout(1000)  # pausa breve
-    # Tomar screenshot después de resolver
+    await page.wait_for_timeout(1000)
     await take_screenshot(page, f"{step_name}_coord_{round_num}_after_solve")
     return True
+
+
 async def handle_captcha_if_present(page, step_name="captcha"):
     """
     Detecta y resuelve captchas de Amazon.
@@ -655,29 +664,27 @@ async def handle_captcha_if_present(page, step_name="captcha"):
     if any(indicator in content for indicator in coordinate_indicators):
         logger.warning("⚠️ Captcha de coordenadas detectado")
         
-        # Bucle para resolver múltiples captchas (hasta 5 rondas, suficiente para "Necesarios: 3")
-        max_coordinate_rounds = 5  # reducido de 8 a 5 (con 3 necesarios basta)
+        # Bucle para resolver múltiples captchas (hasta 5 rondas)
+        max_coordinate_rounds = 5
         for round_num in range(1, max_coordinate_rounds + 1):
             logger.debug(f"   Intento de coordenadas #{round_num}")
             try:
                 await solve_coordinate_captcha(page, f"{step_name}_coord", round_num)
             except Exception as captcha_err:
                 logger.error(f"   Error en ronda {round_num}: {captcha_err}")
-                # Tomar captura de la página actual
                 await take_screenshot(page, f"{step_name}_coord_error_round_{round_num}")
-                raise  # Re-lanzar para que el bucle interno lo maneje
+                raise
             
-            # Esperar a que la página se actualice (reducido a 2 segundos)
+            # Esperar a que la página se actualice (2 segundos)
             await page.wait_for_timeout(2000)
             
             # Verificar si aún hay captcha de coordenadas
             new_content = await page.content()
             if not any(indicator in new_content for indicator in coordinate_indicators):
                 logger.debug(f"   ✅ Captura de coordenadas completada después de {round_num} ronda(s)")
-                # Esperar un poco a que el formulario se estabilice
+                # Esperar un poco más para que el formulario se estabilice
                 await page.wait_for_timeout(2000)
                 break
-            # Si aún hay, continuar
             if round_num == max_coordinate_rounds:
                 logger.warning("   Se alcanzó el máximo de rondas para captcha de coordenadas")
                 screenshot = await take_screenshot(page, "coordinate_captcha_max_rounds")
