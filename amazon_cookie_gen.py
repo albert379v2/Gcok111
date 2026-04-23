@@ -2092,6 +2092,18 @@ async def create_amazon_account(country_code, add_address_flag=True, max_retries
                         # Esperar a que la página responda (3 segundos)
                         await page.wait_for_timeout(3000)
                         
+                        
+
+
+
+
+
+                        # ----- PASO 14: Resolver captcha después del envío (si aparece) -----
+                        await handle_captcha_if_present(page, step_name="post_submit")
+
+
+
+
                         # Verificar si hay mensaje de error de número inválido o contraseña vacía
                         content = await page.content()
                         if "Introduzca un número de móvil válido" in content or "Mínimo 6 caracteres requeridos" in content or "Minimo 6 caracteres requeridos" in content:
@@ -2117,9 +2129,6 @@ async def create_amazon_account(country_code, add_address_flag=True, max_retries
 
 
 
-
-                    # ----- PASO 14: Resolver captcha después del envío (si aparece) -----
-                    await handle_captcha_if_present(page, step_name="post_submit")
 
                     # ----- PASO 14.5: Manejar número ya registrado -----
                     logger.debug("📱 Verificando si el número ya está registrado...")
