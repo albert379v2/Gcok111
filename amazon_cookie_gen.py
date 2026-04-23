@@ -722,14 +722,19 @@ async def handle_captcha_if_present(page, step_name="captcha"):
         
         # Después de resolver el captcha, la página normalmente avanza a verificación SMS.
         # No es necesario esperar el formulario de registro (ya se llenó antes).
-        # Solo verificamos si hubo redirección a login (por bloqueo).
+        # Solo verificamos si realmente estamos en la página de login (y no en la de verificación SMS)
         current_url = page.url
-        if "signin" in current_url.lower() or "login" in current_url.lower():
-            logger.warning("   Redirigido a login después de resolver captcha. Amazon bloqueó la cuenta.")
-            raise Exception("AMAZON_BLOCKED_ACCOUNT")
+        # Verificar si estamos en la página de login (tiene campo #ap_email)
+        is_login_page = await page.query_selector('#ap_email') is not None
+        # Verificar si estamos en la página de verificación SMS (tiene campo #cvf-input-code)
+        is_sms_page = await page.query_selector('#cvf-input-code') is not None
         
-        logger.debug("   Captcha de coordenadas resuelto, continuando con el flujo...")
-        return True
+        if is_login_page and not is_sms_page:
+            logger.warning("   Redirigido a la página de inicio de sesión (no a verificación SMS). Amazon bloqueó la cuenta.")
+            raise Exception("AMAZON_BLOCKED_ACCOUNT")
+        else:
+            logger.debug("   Captcha de coordenadas resuelto, continuando con el flujo...")
+            return True
 
         # ---------- 2. FUNCAPTCHA (ARKOSE) ----------
     title = await page.title()
@@ -2654,7 +2659,7 @@ if __name__ == '__main__':
                         print(f"\n✅ Cookie generada:")
                         print(f"   Teléfono: {data['phone']}")
                         print(f"   Contraseña: {data['password']}")
-                        print(f"   Cookie: {data['cookie_string'][:100]}...")
+                        print(f"   Cookie: {data['cookie_string']}")
                     else:
                         print(f"\n❌ Error: {res['error']}")
                         if res.get('screenshot'):
