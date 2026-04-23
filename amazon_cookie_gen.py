@@ -870,6 +870,122 @@ async def wait_for_sms_code_with_retry(service_name, service_id, page, timeout_t
 
 
 
+async def cambiar_numero_y_reiniciar(page, context, country_code, phone_info, fullname, password, add_address_flag, account_data):
+    """
+    Hace clic en el enlace 'Cambiar' en la página de verificación SMS,
+    obtiene un nuevo número, llena el formulario y reinicia el proceso.
+    Retorna True si logra avanzar, o lanza excepción.
+    """
+    logger.debug("🔄 Intentando cambiar número desde la página de verificación SMS...")
+    
+    # Buscar el enlace "Cambiar" específico (el que está en la página de SMS)
+    change_selectors = [
+        'a:has-text("Cambiar")',
+        'a[href*="/ap/register?"]',
+        'a.a-link-normal[href*="register"]'
+    ]
+    change_link = None
+    for sel in change_selectors:
+        try:
+            change_link = await page.wait_for_selector(sel, timeout=5000)
+            if change_link:
+                logger.debug(f"   ✅ Enlace 'Cambiar' encontrado con selector: {sel}")
+                break
+        except:
+            continue
+    
+    if not change_link:
+        logger.warning("   ❌ No se encontró enlace 'Cambiar'")
+        raise Exception("NO_CHANGE_LINK_FOUND")
+    
+    # Hacer clic y esperar la página de login/registro
+    await change_link.click()
+    await page.wait_for_load_state('domcontentloaded', timeout=15000)
+    await page.wait_for_timeout(2000)
+    
+    # Verificar que estamos en la página correcta (campo de email/teléfono)
+    phone_field_selector = 'input#ap_email, input[name="email"], input[type="email"], input[type="tel"]'
+    await page.wait_for_selector(phone_field_selector, state='visible', timeout=10000)
+    
+    # Obtener un nuevo número (mismo servicio, mismo país)
+    current_service = phone_info['service_name']
+    current_country = phone_info['purchase_country']
+    new_phone_info = await get_phone_number(country_code, force_service=current_service, force_country=current_country)
+    if not new_phone_info:
+        raise Exception("No se pudo obtener otro número")
+    
+    # Actualizar account_data y phone_info
+    account_data['phone'] = new_phone_info['local']
+    phone_info = new_phone_info
+    service_id = phone_info['service_id']
+    service_name = phone_info['service_name']
+    purchase_country = phone_info['purchase_country']
+    
+    # Ingresar el nuevo número
+    await smart_fill(page, phone_field_selector, phone_info['full'])
+    
+    # Hacer clic en Continuar
+    continue_selectors = ['input.a-button-input', 'button#continue']
+    continue_clicked = False
+    for sel in continue_selectors:
+        if await smart_click(page, sel, wait_for_navigation=True):
+            continue_clicked = True
+            break
+    if not continue_clicked:
+        raise Exception("No se encontró botón Continuar después de cambiar número")
+    
+    # Esperar a que cargue la página intermedia "Proceder a crear una cuenta"
+    await page.wait_for_timeout(3000)
+    primary_selector = 'span#intention-submit-button input.a-button-input'
+    if not await smart_click(page, primary_selector, wait_for_navigation=False):
+        await page.wait_for_timeout(4000)
+    await page.wait_for_selector('#ap_customer_name', timeout=WAIT_TIMEOUT*1000)
+    
+    # Re-llenar el formulario (nombre, contraseña, confirmación)
+    await smart_fill(page, '#ap_customer_name', fullname)
+    await smart_fill(page, '#ap_password', password)
+    await smart_fill(page, '#ap_password_check', password)
+    
+    # Hacer clic en botón final de registro
+    final_btn_selectors = [
+        'input#continue', 'input.a-button-input', 'button[type="submit"]',
+        'input[value*="Crear cuenta"]', 'button:has-text("Crear cuenta")'
+    ]
+    for sel in final_btn_selectors:
+        if await smart_click(page, sel, wait_for_navigation=True):
+            break
+    
+    # Esperar a que cargue la página de verificación SMS (o captcha)
+    await page.wait_for_timeout(5000)
+    
+    return True
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 # -------------------------------------------------------------------
 # SMS SERVICES
 # -------------------------------------------------------------------
@@ -1670,7 +1786,11 @@ async def create_amazon_account(country_code, add_address_flag=True, max_retries
                         raise Exception("No se encontró botón Continuar")
                     last_screenshot = await take_screenshot(page, "despues_continuar")
 
-                    # ----- PASO 10.5: Manejar números ya registrados (bucle de cambio) -----
+
+
+
+
+                    # ----- PASO 10.3: Manejar números ya registrados (bucle de cambio) -----
                     max_phone_attempts = 3
                     phone_attempt = 1
                     phone_success = False
@@ -1680,9 +1800,18 @@ async def create_amazon_account(country_code, add_address_flag=True, max_retries
                     while phone_attempt <= max_phone_attempts and not phone_success:
                         # Verificar si la URL contiene "claim?" (número ya registrado)
                         if "claim?" in page.url.lower():
-                            logger.warning(f"⚠️ Número ya registrado (intento {phone_attempt}/{max_phone_attempts}). Intentando cambiar...")
+                            logger.warning(f"⚠️ Número ya registrado (intento {phone_attempt}/{max_phone_attempts}).")
                             
-                            # 1. Intentar localizar el enlace "Cambiar" con diferentes selectores
+                            # --- PRIMERO: Verificar si hay error de bloqueo de Amazon ---
+                            page_content = await page.content()
+                            if "Lo sentimos" in page_content or "no podemos crear tu cuenta" in page_content:
+                                logger.warning("   ❌ Página de error de Amazon detectada (cuenta no permitida). Lanzando excepción para reintento interno.")
+                                raise Exception("AMAZON_BLOCKED_ACCOUNT")
+                            
+                            # --- Si no hay error, intentar cambiar número ---
+                            logger.debug("   Intentando cambiar número...")
+                            
+                            # 1. Intentar localizar el enlace "Cambiar" con diferentes selectores (timeout reducido)
                             change_link = None
                             change_selectors = [
                                 '#ap_change_login_claim',                           # ID directo
@@ -1692,7 +1821,7 @@ async def create_amazon_account(country_code, add_address_flag=True, max_retries
                             ]
                             for sel in change_selectors:
                                 try:
-                                    change_link = await page.wait_for_selector(sel, timeout=WAIT_TIMEOUT*1000)
+                                    change_link = await page.wait_for_selector(sel, timeout=3000)  # 3 segundos por selector
                                     if change_link:
                                         logger.debug(f"   ✅ Enlace 'Cambiar' encontrado con selector: {sel}")
                                         break
@@ -1705,7 +1834,6 @@ async def create_amazon_account(country_code, add_address_flag=True, max_retries
                                 logger.debug("   🔍 No se encontró enlace con selectores, extrayendo URL del HTML...")
                                 page_content = await page.content()
                                 # Buscar el href del enlace con id="ap_change_login_claim"
-                                import re
                                 match = re.search(r'<a\s+id="ap_change_login_claim"[^>]*href="([^"]+)"', page_content)
                                 if match:
                                     change_url = match.group(1).replace('&amp;', '&')
@@ -1714,11 +1842,11 @@ async def create_amazon_account(country_code, add_address_flag=True, max_retries
                                     await page.goto(change_url, wait_until='domcontentloaded')
                                     # Esperar a que aparezca el campo de teléfono
                                     await page.wait_for_selector(phone_field_selector, state='visible', timeout=WAIT_TIMEOUT*1000)
-                                    # Indicar que hemos cambiado (no usamos change_link pero el flujo continúa)
                                     change_link = True  # Bandera para indicar que se realizó el cambio
                                 else:
                                     logger.warning("   ❌ No se pudo extraer la URL del enlace 'Cambiar'")
-                                    raise Exception("No se encontró enlace para cambiar número")
+                                    # Si no se encuentra el enlace, probablemente Amazon ya bloqueó la cuenta
+                                    raise Exception("AMAZON_BLOCKED_ACCOUNT")
                             
                             # 3. Si tenemos un enlace (ya sea por selector o por navegación directa)
                             if change_link:
@@ -1769,6 +1897,8 @@ async def create_amazon_account(country_code, add_address_flag=True, max_retries
 
                     if not phone_success:
                         raise Exception("Se agotaron los intentos de cambio de número")
+                    
+
 
                     # ----- PASO 10.5: Resolver captcha si aparece antes del envío -----
                     await handle_captcha_if_present(page, step_name="pre_submit")
@@ -1999,34 +2129,28 @@ async def create_amazon_account(country_code, add_address_flag=True, max_retries
                             await page.wait_for_load_state('domcontentloaded', timeout=NAVIGATION_TIMEOUT*1000)
                         else:
                             logger.warning("   ⚠️ No se encontró botón de verificar")
+                    # Si no se recibió código en 2 minutos
                     else:
-                        # No se recibió código en 2 minutos. Cancelar número con manejo de error.
-                        logger.warning(f"⏰ No se recibió código SMS en 2 minutos. Cancelando número...")
-                        cancel_success = False
-                        for cancel_attempt in range(3):  # hasta 3 intentos de cancelación
+                        logger.warning(f"⏰ No se recibió código SMS en 2 minutos (intento {num_att}). Cambiando número...")
+                        
+                        # Intentar cancelar el número (pero no es crítico)
+                        try:
                             if service_name == 'hero':
-                                cancel_ok = await cancel_hero_sms(service_id)
-                                if cancel_ok:
-                                    logger.debug(f"   ✅ Número Hero cancelado después de {cancel_attempt+1} intentos")
-                                    cancel_success = True
-                                    break
-                                else:
-                                    # Si falla por "EARLY_CANCEL_DENIED", esperar 5 segundos y reintentar
-                                    await asyncio.sleep(5)
+                                await cancel_hero_sms(service_id)
                             elif service_name == '5sim':
-                                cancel_ok = await cancel_fivesim(service_id)
-                                if cancel_ok:
-                                    logger.debug(f"   ✅ Número 5sim cancelado después de {cancel_attempt+1} intentos")
-                                    cancel_success = True
-                                    break
-                                else:
-                                    await asyncio.sleep(2)
-                            else:
-                                cancel_success = True
-                                break
-                        if not cancel_success:
-                            logger.warning(f"   ⚠️ No se pudo cancelar el número, se continuará con el siguiente...")
-                        raise Exception("Timeout esperando código SMS (2 minutos)")
+                                await cancel_fivesim(service_id)
+                        except Exception as cancel_err:
+                            logger.debug(f"Error cancelando número: {cancel_err}")
+                        
+                        # Usar la función de cambio de número
+                        try:
+                            await cambiar_numero_y_reiniciar(page, context, country_code, phone_info, fullname, password, add_address_flag, account_data)
+                            # Si llegamos aquí, se reinició correctamente, continuamos al siguiente intento de número
+                            continue
+                        except Exception as change_err:
+                            logger.warning(f"Error al cambiar número: {change_err}")
+                            # Si falla, salir del bucle de números y lanzar excepción global
+                            raise
 
                     # ----- PASO 16: Verificar éxito -----
                     if 'your-account' in page.url.lower() or 'account' in page.url.lower() or 'welcome' in page.url.lower():
