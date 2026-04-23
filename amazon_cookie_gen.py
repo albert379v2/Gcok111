@@ -1727,7 +1727,7 @@ async def create_amazon_account(country_code, add_address_flag=True, max_retries
                     if clicked:
                         # Si se hizo clic, esperar que aparezca el formulario de registro
                         try:
-                            await page.wait_for_selector('#ap_customer_name', state='visible', timeout=WAIT_TIMEOUT*1000)
+                            await page.wait_for_function('document.querySelector("#ap_customer_name") !== null', timeout=15000)
                             logger.debug("   ✅ Formulario de registro cargado después del clic")
                         except Exception as e:
                             raise Exception(f"Timeout esperando campo de nombre después del clic: {e}")
@@ -1766,6 +1766,17 @@ async def create_amazon_account(country_code, add_address_flag=True, max_retries
 
 
 
+
+
+
+
+
+
+
+
+
+
+
                     # ----- PASO 12: Llenar formulario de registro (con reintentos) -----
                     logger.debug("📝 Llenando formulario completo...")
                     last_screenshot = await take_screenshot(page, "formulario_antes_llenar")
@@ -1780,6 +1791,10 @@ async def create_amazon_account(country_code, add_address_flag=True, max_retries
                     if not name_filled:
                         logger.warning("⚠️ No se pudo llenar campo de nombre, puede estar precargado")
 
+                    # Asegurar que los campos de contraseña existen y son visibles
+                    await page.wait_for_selector('input#ap_password', state='visible', timeout=5000)
+                    await page.wait_for_selector('input#ap_password_check', state='visible', timeout=5000)
+
                     # Bucle de reintento para el envío del formulario
                     max_submit_attempts = 3
                     submit_success = False
@@ -1790,6 +1805,17 @@ async def create_amazon_account(country_code, add_address_flag=True, max_retries
                             await smart_fill(page, 'input#ap_password', password)
                             await smart_fill(page, 'input#ap_password_check', password)
                             await smart_fill(page, 'input[name="passwordCheck"]', password)
+                        else:
+                            # Primer intento: llenar normalmente
+                            await smart_fill(page, 'input#ap_password', password)
+                            await smart_fill(page, 'input#ap_password_check', password)
+                            await smart_fill(page, 'input[name="passwordCheck"]', password)
+                        
+                        # Verificar que la contraseña se llenó correctamente
+                        filled_password = await page.input_value('input#ap_password')
+                        if not filled_password or len(filled_password) < 6:
+                            logger.warning(f"   Contraseña no llenada correctamente (valor: {filled_password}), reintentando...")
+                            continue
                         
                         # ----- PASO 13: Botón de registro final -----
                         logger.debug("🎯 Buscando botón de registro final...")
@@ -1809,11 +1835,11 @@ async def create_amazon_account(country_code, add_address_flag=True, max_retries
                         # Esperar a que la página responda (3 segundos)
                         await page.wait_for_timeout(3000)
                         
-                        # Verificar si hay mensaje de error de número inválido
+                        # Verificar si hay mensaje de error de número inválido o contraseña vacía
                         content = await page.content()
-                        if "Introduzca un número de móvil válido" in content:
-                            logger.warning(f"   Número inválido detectado (intento {submit_attempt}), reintentando envío...")
-                            # No salir del bucle, simplemente continuar al siguiente intento
+                        if "Introduzca un número de móvil válido" in content or "Mínimo 6 caracteres requeridos" in content or "Minimo 6 caracteres requeridos" in content:
+                            logger.warning(f"   Error de validación detectado (intento {submit_attempt}), reintentando envío...")
+                            # Continuar al siguiente intento
                             continue
                         else:
                             # No hay error, salir del bucle de reintento
@@ -1824,6 +1850,15 @@ async def create_amazon_account(country_code, add_address_flag=True, max_retries
                         raise Exception("No se pudo enviar el formulario de registro después de varios intentos")
                     
                     last_screenshot = await take_screenshot(page, "despues_registro")
+
+
+
+
+
+
+
+
+
 
 
                     # ----- PASO 14: Resolver captcha después del envío (si aparece) -----
