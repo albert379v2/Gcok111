@@ -636,8 +636,8 @@ async def solve_coordinate_captcha(page, step_name="coordinate", round_num=1):
     if not tasks:
         raise Exception("No hay servicios de captcha configurados")
 
-    # Timeout de 50 segundos (para no exceder el límite de Amazon)
-    done, pending = await asyncio.wait(tasks, timeout=50, return_when=asyncio.FIRST_COMPLETED)
+    # Timeout de 57 segundos (para no exceder el límite de Amazon)
+    done, pending = await asyncio.wait(tasks, timeout=57, return_when=asyncio.FIRST_COMPLETED)
     coordinates = None
     for task in done:
         try:
