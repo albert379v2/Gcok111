@@ -939,107 +939,6 @@ async def wait_for_sms_code_with_retry(service_name, service_id, page, timeout_t
 
 
 
-async def cambiar_numero_y_reiniciar(page, context, country_code, phone_info, fullname, password, add_address_flag, account_data):
-    """
-    Hace clic en el enlace 'Cambiar' en la página de verificación SMS,
-    obtiene un nuevo número, llena el formulario y reinicia el proceso.
-    Retorna True si logra avanzar, o lanza excepción.
-    """
-    logger.debug("🔄 Intentando cambiar número desde la página de verificación SMS...")
-    
-    # Buscar el enlace "Cambiar" específico (el que está en la página de SMS)
-    change_selectors = [
-        'a:has-text("Cambiar")',
-        'a[href*="/ap/register?"]',
-        'a.a-link-normal[href*="register"]'
-    ]
-    change_link = None
-    for sel in change_selectors:
-        try:
-            change_link = await page.wait_for_selector(sel, timeout=5000)
-            if change_link:
-                logger.debug(f"   ✅ Enlace 'Cambiar' encontrado con selector: {sel}")
-                break
-        except:
-            continue
-    
-    if not change_link:
-        logger.warning("   ❌ No se encontró enlace 'Cambiar'")
-        raise Exception("NO_CHANGE_LINK_FOUND")
-    
-    # Hacer clic y esperar la página de login/registro
-    await change_link.click()
-    await page.wait_for_load_state('domcontentloaded', timeout=15000)
-    await page.wait_for_timeout(2000)
-    
-    # Verificar que estamos en la página correcta (campo de email/teléfono)
-    phone_field_selector = 'input#ap_email, input[name="email"], input[type="email"], input[type="tel"]'
-    await page.wait_for_selector(phone_field_selector, state='visible', timeout=10000)
-    
-    # Obtener un nuevo número (mismo servicio, mismo país)
-    current_service = phone_info['service_name']
-    current_country = phone_info['purchase_country']
-    new_phone_info = await get_phone_number(country_code, force_service=current_service, force_country=current_country)
-    if not new_phone_info:
-        raise Exception("No se pudo obtener otro número")
-    
-    # Actualizar account_data y phone_info
-    account_data['phone'] = new_phone_info['local']
-    phone_info = new_phone_info
-    service_id = phone_info['service_id']
-    service_name = phone_info['service_name']
-    purchase_country = phone_info['purchase_country']
-    
-    # Ingresar el nuevo número
-    await smart_fill(page, phone_field_selector, phone_info['full'])
-    
-    # Hacer clic en Continuar
-    continue_selectors = ['input.a-button-input', 'button#continue']
-    continue_clicked = False
-    for sel in continue_selectors:
-        if await smart_click(page, sel, wait_for_navigation=True):
-            continue_clicked = True
-            break
-    if not continue_clicked:
-        raise Exception("No se encontró botón Continuar después de cambiar número")
-    
-    # Esperar a que cargue la página intermedia "Proceder a crear una cuenta"
-    await page.wait_for_timeout(3000)
-    primary_selector = 'span#intention-submit-button input.a-button-input'
-    if not await smart_click(page, primary_selector, wait_for_navigation=False):
-        await page.wait_for_timeout(4000)
-    await page.wait_for_selector('#ap_customer_name', timeout=WAIT_TIMEOUT*1000)
-    
-    # Re-llenar el formulario (nombre, contraseña, confirmación)
-    await smart_fill(page, '#ap_customer_name', fullname)
-    await smart_fill(page, '#ap_password', password)
-    await smart_fill(page, '#ap_password_check', password)
-    
-    # Hacer clic en botón final de registro
-    final_btn_selectors = [
-        'input#continue', 'input.a-button-input', 'button[type="submit"]',
-        'input[value*="Crear cuenta"]', 'button:has-text("Crear cuenta")'
-    ]
-    for sel in final_btn_selectors:
-        if await smart_click(page, sel, wait_for_navigation=True):
-            break
-    
-    # Esperar a que cargue la página de verificación SMS (o captcha)
-    await page.wait_for_timeout(5000)
-    
-    return True
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 
@@ -2155,9 +2054,95 @@ async def create_amazon_account(country_code, add_address_flag=True, max_retries
                         # Tomar screenshot después del clic
                         last_screenshot = await take_screenshot(page, "despues_continuar_numero_registrado")
 
-                    # ----- PASO 15: Verificación por SMS (con reintentos de número) -----
+                                        # ----- PASO 15: Verificación por SMS (con reintentos de número) -----
                     logger.debug("📱 [PASO 15] Verificación SMS con reintentos de número...")
                     await page.wait_for_timeout(5000)
+                    
+                    # Función local para cambiar número y reiniciar (SIN argumentos, usa variables del ámbito)
+                    async def cambiar_numero_y_reiniciar_local():
+                        nonlocal phone_info, service_id, service_name, purchase_country, account_data
+                        logger.debug("🔄 Intentando cambiar número desde la página de verificación SMS...")
+                        
+                        # Buscar el enlace "Cambiar"
+                        change_selectors = [
+                            'a:has-text("Cambiar")',
+                            'a[href*="/ap/register?"]',
+                            'a.a-link-normal[href*="register"]',
+                            'a[href*="sign_in_otp_change"]'
+                        ]
+                        change_link = None
+                        for sel in change_selectors:
+                            try:
+                                change_link = await page.wait_for_selector(sel, timeout=5000)
+                                if change_link:
+                                    logger.debug(f"   ✅ Enlace 'Cambiar' encontrado con selector: {sel}")
+                                    break
+                            except:
+                                continue
+                        
+                        if not change_link:
+                            logger.warning("   ❌ No se encontró enlace 'Cambiar'")
+                            raise Exception("NO_CHANGE_LINK_FOUND")
+                        
+                        # Hacer clic y esperar la página de login/registro
+                        await change_link.click()
+                        await page.wait_for_load_state('domcontentloaded', timeout=15000)
+                        await page.wait_for_timeout(2000)
+                        
+                        # Verificar que estamos en la página correcta
+                        phone_field_selector = 'input#ap_email, input[name="email"], input[type="email"], input[type="tel"]'
+                        await page.wait_for_selector(phone_field_selector, state='visible', timeout=10000)
+                        
+                        # Obtener un nuevo número (mismo servicio, mismo país)
+                        current_service = phone_info['service_name']
+                        current_country = phone_info['purchase_country']
+                        new_phone_info = await get_phone_number(country_code, force_service=current_service, force_country=current_country)
+                        if not new_phone_info:
+                            raise Exception("No se pudo obtener otro número")
+                        
+                        # Actualizar variables
+                        phone_info = new_phone_info
+                        account_data['phone'] = phone_info['local']
+                        service_id = phone_info['service_id']
+                        service_name = phone_info['service_name']
+                        purchase_country = phone_info['purchase_country']
+                        
+                        # Ingresar el nuevo número
+                        await smart_fill(page, phone_field_selector, phone_info['full'])
+                        
+                        # Hacer clic en Continuar
+                        continue_selectors = ['input.a-button-input', 'button#continue']
+                        continue_clicked = False
+                        for sel in continue_selectors:
+                            if await smart_click(page, sel, wait_for_navigation=True):
+                                continue_clicked = True
+                                break
+                        if not continue_clicked:
+                            raise Exception("No se encontró botón Continuar después de cambiar número")
+                        
+                        # Esperar a que cargue la página intermedia
+                        await page.wait_for_timeout(3000)
+                        primary_selector = 'span#intention-submit-button input.a-button-input'
+                        if not await smart_click(page, primary_selector, wait_for_navigation=False):
+                            await page.wait_for_timeout(4000)
+                        await page.wait_for_selector('#ap_customer_name', timeout=WAIT_TIMEOUT*1000)
+                        
+                        # Re-llenar el formulario
+                        await smart_fill(page, '#ap_customer_name', fullname)
+                        await smart_fill(page, '#ap_password', password)
+                        await smart_fill(page, '#ap_password_check', password)
+                        
+                        # Hacer clic en botón final de registro
+                        final_btn_selectors = [
+                            'input#continue', 'input.a-button-input', 'button[type="submit"]',
+                            'input[value*="Crear cuenta"]', 'button:has-text("Crear cuenta")'
+                        ]
+                        for sel in final_btn_selectors:
+                            if await smart_click(page, sel, wait_for_navigation=True):
+                                break
+                        
+                        # Esperar a que cargue la página de verificación SMS (o captcha)
+                        await page.wait_for_timeout(5000)
                     
                     # Bucle de reintentos de número (hasta 3 números diferentes)
                     max_number_attempts = 3
@@ -2241,7 +2226,7 @@ async def create_amazon_account(country_code, add_address_flag=True, max_retries
                                 raise Exception("No se pudo verificar SMS después de varios números")
                             
                             # Cambiar de número y reiniciar el proceso
-                            await cambiar_numero_y_reiniciar()
+                            await cambiar_numero_y_reiniciar_local()
                             # Después de cambiar, continuar con el siguiente intento del bucle
                             continue
                     
@@ -2372,7 +2357,7 @@ async def create_amazon_account(country_code, add_address_flag=True, max_retries
                     last_error = e
                     error_str = str(e)
                     # Capturamos cualquier excepción relacionada con FunCaptcha para reintentar internamente
-                    if "FUNCAPTCHA_NO_SITEKEY" in error_str or "FUNCAPTCHA_NO_TOKEN" in error_str or "FUNCAPTCHA_NOT_DETECTED" in error_str or "AMAZON_BLOCKED_ACCOUNT" in error_str or "REDIRECTED_TO_LOGIN" in error_str:
+                    if "SMS_TIME_OUT" in error_str or "FUNCAPTCHA_NO_SITEKEY" in error_str or "FUNCAPTCHA_NO_TOKEN" in error_str or "FUNCAPTCHA_NOT_DETECTED" in error_str or "AMAZON_BLOCKED_ACCOUNT" in error_str or "REDIRECTED_TO_LOGIN" in error_str:
                         logger.warning(f"Fallo recuperable (intento interno {internal_attempt}), reiniciando en nueva pestaña...")
                         continue
                     else:
