@@ -621,11 +621,11 @@ async def solve_coordinate_captcha(page, step_name="coordinate", round_num=1):
     hint_text = "Haz clic en todas las imágenes que contengan el objeto indicado"
 
     # --- Funciones asíncronas para cada servicio ---
-    async def solve_with_2captcha():
+    async def solve_2captcha_async():
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(None, solve_2captcha_coordinates, img_path, hint_text)
 
-    async def solve_with_anticaptcha():
+    async def solve_anticaptcha_async():
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(None, solve_anticaptcha_coordinates, img_path, hint_text)
     tasks = []
