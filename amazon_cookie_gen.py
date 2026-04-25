@@ -1985,7 +1985,7 @@ async def create_amazon_account(country_code, add_address_flag=True, max_retries
                     await page.wait_for_selector('input#ap_password_check', state='visible', timeout=5000)
 
                     # Bucle de reintento para el envío del formulario
-                    max_submit_attempts = 3
+                    max_submit_attempts = 10
                     submit_success = False
                     for submit_attempt in range(1, max_submit_attempts + 1):
                         if submit_attempt > 1:
