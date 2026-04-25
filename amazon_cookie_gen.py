@@ -274,7 +274,7 @@ def solve_2captcha_coordinates(image_path, hint):
         'json': 1
     }
     try:
-        resp = requests.post(url, data=data, timeout=30)
+        resp = requests.post(url, data=data, timeout=60)
         if resp.status_code == 200:
             result = resp.json()
             if result.get('status') == 1:
@@ -313,6 +313,11 @@ def solve_2captcha_coordinates(image_path, hint):
                             continue
                         else:
                             break
+
+
+            else:
+                logger.warning(f"   2captcha error: {result}")
+                return None
         return None
     except Exception as e:
         logger.warning(f"Error en 2captcha HTTP: {e}")
@@ -555,13 +560,11 @@ async def extract_site_key_robust(page):
 
     return site_key, surl
 
-
 async def solve_coordinate_captcha(page, step_name="coordinate", round_num=1):
-    """Resuelve captcha de coordenadas usando ambos servicios en paralelo, con timeout individual."""
     logger.debug(f"   Resolviendo captcha de coordenadas en paso: {step_name} (ronda {round_num})")
     await page.wait_for_timeout(1000)
 
-    # Esperar canvas o imagen (con wait_for_selector)
+    # Esperar canvas o imagen
     try:
         canvas = await page.wait_for_selector('canvas', timeout=20000)
         if canvas:
@@ -578,7 +581,7 @@ async def solve_coordinate_captcha(page, step_name="coordinate", round_num=1):
         screenshot = await take_screenshot(page, f"{step_name}_coord_{round_num}_element_not_found")
         raise Exception(f"No se encontró canvas/imagen en ronda {round_num}: {e}. Captura: {screenshot[:100]}...")
 
-    # Esperar bounding box válido (hasta 5 segundos)
+    # Bounding box
     box = None
     for _ in range(10):
         box = await click_element.bounding_box()
@@ -589,7 +592,7 @@ async def solve_coordinate_captcha(page, step_name="coordinate", round_num=1):
         screenshot = await take_screenshot(page, f"{step_name}_coord_{round_num}_no_bbox")
         raise Exception(f"No se obtuvo bounding box en ronda {round_num}. Captura: {screenshot[:100]}...")
 
-    # Capturar imagen del captcha
+    # Capturar imagen
     img_path = None
     if click_element == canvas:
         screenshot_bytes = await canvas.screenshot()
@@ -608,7 +611,6 @@ async def solve_coordinate_captcha(page, step_name="coordinate", round_num=1):
     await take_screenshot(page, f"{step_name}_coord_{round_num}_before_solve")
     hint_text = "Haz clic en todas las imágenes que contengan el objeto indicado"
 
-    # Función para resolver con 2captcha (con timeout)
     async def solve_with_2captcha():
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(None, solve_2captcha_coordinates, img_path, hint_text)
@@ -625,30 +627,24 @@ async def solve_coordinate_captcha(page, step_name="coordinate", round_num=1):
     if not tasks:
         raise Exception("No hay servicios de captcha configurados")
 
-    # Esperar hasta 50 segundos, pero sin cancelar las tareas que aún corren
-    # para que si una falla rápido, la otra pueda continuar.
-    coordinates = None
-    try:
-        done, pending = await asyncio.wait(tasks, timeout=55, return_when=asyncio.FIRST_COMPLETED)
-        for task in done:
-            try:
-                coords = task.result()
-                if coords:
-                    coordinates = coords
-                    break
-            except Exception as e:
-                logger.warning(f"   Servicio falló: {e}")
-        # Si ninguna completó (timeout), lanzamos excepción
-        if not coordinates:
-            # Cancelar las pendientes solo si hay
-            for task in pending:
-                task.cancel()
-            raise asyncio.TimeoutError("Ambos servicios tardaron más de 50 segundos")
-    except asyncio.TimeoutError:
-        screenshot = await take_screenshot(page, f"{step_name}_coord_{round_num}_timeout")
-        raise Exception(f"CAPTCHA_TIMEOUT round {round_num}. Captura: {screenshot[:100]}...")
+    # Esperar la primera tarea que complete (sin timeout artificial)
+    # Si ambas fallan o una tarda mucho, se quedará esperando hasta que termine.
+    # Para evitar bloqueo infinito, podemos poner un timeout grande (120s) pero déjalo sin timeout y confía en que el servicio responderá.
+    done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
 
-    # Si no hay coordenadas después de las tareas completadas
+    coordinates = None
+    for task in done:
+        try:
+            coords = task.result()
+            if coords:
+                coordinates = coords
+                break
+        except Exception as e:
+            logger.warning(f"   Servicio falló: {e}")
+    # Cancelar tareas pendientes
+    for task in pending:
+        task.cancel()
+
     if not coordinates:
         screenshot = await take_screenshot(page, f"{step_name}_coord_{round_num}_no_solution")
         raise Exception(f"CAPTCHA_NO_SOLUTION round {round_num}. Captura: {screenshot[:100]}...")
@@ -671,7 +667,6 @@ async def solve_coordinate_captcha(page, step_name="coordinate", round_num=1):
     await page.wait_for_timeout(1000)
     await take_screenshot(page, f"{step_name}_coord_{round_num}_after_solve")
     return True
-
 async def handle_captcha_if_present(page, step_name="captcha"):
     """
     Detecta y resuelve captchas de Amazon.
