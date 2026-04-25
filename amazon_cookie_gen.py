@@ -789,7 +789,7 @@ async def handle_captcha_if_present(page, step_name="captcha"):
             logger.warning("   Redirigido a la página de inicio de sesión (no a verificación SMS). Amazon bloqueó la cuenta.")
             raise Exception("AMAZON_BLOCKED_ACCOUNT")
 
-        # Si no detectamos ninguna, esperar un poco y asumir que avanzó
+        # Si no detectamos ninguna, esperar un poco y asumir que avanzó 
         logger.debug("   Captcha resuelto, no se detectó formulario ni SMS. Esperando 3 segundos...")
         await page.wait_for_timeout(3000)
         if await page.query_selector('#cvf-input-code') is not None:
@@ -2194,7 +2194,13 @@ async def create_amazon_account(country_code, add_address_flag=True, max_retries
                             except:
                                 continue
                         if not change_link:
-                            raise Exception("NO_CHANGE_LINK_FOUND")
+                            # --- PRIMERO: Verificar si hay error de bloqueo de Amazon ---
+                            page_content = await page.content()
+                            if "Lo sentimos" in page_content or "no podemos crear tu cuenta" in page_content:
+                                logger.warning("   ❌ Página de error de Amazon detectada (cuenta no permitida). Lanzando excepción para reintento interno.")
+                            
+                            #Si amazon blcok no se resuelve en error interno, habré que manejar para q otros errores que no sea éste sí sem najen coomo error interno
+                            raise Exception("AMAZON_BLOCKED_ACCOUNT")
 
                         await change_link.click()
                         await page.wait_for_load_state('domcontentloaded', timeout=15000)
