@@ -943,7 +943,7 @@ async def wait_for_sms_code_with_retry(service_name, service_id, page, timeout_t
     Retorna el código o None.
     """
     start = time.time()
-    last_resend = 0
+    last_resend = start  
     while time.time() - start < timeout_total:
         # Intentar obtener el código del servicio
         code = None
@@ -1268,8 +1268,9 @@ async def get_phone_number(account_country, force_service=None, force_country=No
     }
 
     # Orden de países por precio (barato a caro) para Hero
-    # hero_order = ['CM', 'BR', 'MY', 'KZ', 'ID', 'MA' Da error, 'KG', 'CO', 'MX']
-    hero_order = ['CM', 'BR', 'MY', 'KZ', 'ID', 'MA', 'KG', 'CO', 'MX']  
+    # hero_order = ['CM', 'BR', 'MY' no llegan sms, 'KZ', 'ID', 'MA' Da error, 'KG', 'CO', 'MX']
+    # hero_order = ['CM', 'BR', 'MY', 'KZ', 'ID', 'MA', 'KG', 'CO', 'MX']
+    hero_order = ['CM', 'BR', 'KZ', 'ID', 'MA', 'KG', 'CO', 'MX']  
 
     # Orden manual para 5sim (si no se pueden obtener precios)
     FIVESIM_MANUAL_ORDER = ['CO', 'LV', 'PK', 'TJ', 'KE', 'MX']
@@ -2266,7 +2267,7 @@ async def create_amazon_account(country_code, add_address_flag=True, max_retries
 
 
 
-                        
+
                     # --- Bucle de reintentos de número (hasta 3 números) ---
                     max_number_attempts = 3
                     sms_success = False
@@ -2309,12 +2310,24 @@ async def create_amazon_account(country_code, add_address_flag=True, max_retries
                         # 15.3 Esperar código SMS (2 minutos, reenvío cada 40s)
                         sms_code = await wait_for_sms_code_with_retry(service_name, service_id, page, timeout_total=120, resend_interval=40)
                         if sms_code:
+                            # Esperar a que el campo de código esté presente (hasta 5 segundos)
+                            code_input = None
+                            for _ in range(5):
+                                code_input = await page.query_selector('#cvf-input-code')
+                                if code_input and await code_input.is_visible():
+                                    break
+                                await page.wait_for_timeout(1000)
+                            if not code_input:
+                                logger.warning("   Campo de código no encontrado después de reenviar, reintentando...")
+                                continue  # volver a esperar el código (el bucle de 2 minutos sigue)
+                            # Limpiar el campo antes de escribir (por si hay texto residual)
+                            await code_input.fill('')
                             await code_input.fill(sms_code)
-                            logger.debug(f"✅ Código ingresado: {sms_code}")
+                            logger.debug(f"   ✅ Código SMS ingresado: {sms_code}")
                             verify_btn = await page.query_selector('input[type="submit"], button:has-text("Verificar"), button:has-text("Verify")')
                             if verify_btn:
                                 await verify_btn.click()
-                                await page.wait_for_load_state('domcontentloaded', timeout=30000)
+                                await page.wait_for_load_state('domcontentloaded', timeout=NAVIGATION_TIMEOUT*1000)
                                 if 'your-account' in page.url.lower() or 'account' in page.url.lower():
                                     sms_success = True
                                     break
