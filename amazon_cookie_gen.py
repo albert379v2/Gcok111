@@ -2176,6 +2176,14 @@ async def create_amazon_account(country_code, add_address_flag=True, max_retries
                         
                         # Esperar a que cargue la página de verificación SMS (o captcha)
                         await page.wait_for_timeout(5000)
+
+
+                        
+                        # ----- PASO 14: Resolver captcha después del envío (si aparece) -----
+                        await handle_captcha_if_present(page, step_name="post_submit")
+
+
+
                     
                     # Bucle de reintentos de número (hasta 3 números diferentes)
                     max_number_attempts = 3
