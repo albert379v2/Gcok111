@@ -560,11 +560,20 @@ async def extract_site_key_robust(page):
 
     return site_key, surl
 
+
+
+
+
+
+
+
+
 async def solve_coordinate_captcha(page, step_name="coordinate", round_num=1):
+    """Resuelve captcha de coordenadas usando ambos servicios, esperando al menos uno exitoso."""
     logger.debug(f"   Resolviendo captcha de coordenadas en paso: {step_name} (ronda {round_num})")
     await page.wait_for_timeout(1000)
 
-    # Esperar canvas o imagen
+    # --- Esperar canvas o imagen ---
     try:
         canvas = await page.wait_for_selector('canvas', timeout=20000)
         if canvas:
@@ -581,7 +590,7 @@ async def solve_coordinate_captcha(page, step_name="coordinate", round_num=1):
         screenshot = await take_screenshot(page, f"{step_name}_coord_{round_num}_element_not_found")
         raise Exception(f"No se encontró canvas/imagen en ronda {round_num}: {e}. Captura: {screenshot[:100]}...")
 
-    # Bounding box
+    # --- Esperar bounding box ---
     box = None
     for _ in range(10):
         box = await click_element.bounding_box()
@@ -592,7 +601,7 @@ async def solve_coordinate_captcha(page, step_name="coordinate", round_num=1):
         screenshot = await take_screenshot(page, f"{step_name}_coord_{round_num}_no_bbox")
         raise Exception(f"No se obtuvo bounding box en ronda {round_num}. Captura: {screenshot[:100]}...")
 
-    # Capturar imagen
+    # --- Capturar imagen del captcha ---
     img_path = None
     if click_element == canvas:
         screenshot_bytes = await canvas.screenshot()
@@ -611,6 +620,7 @@ async def solve_coordinate_captcha(page, step_name="coordinate", round_num=1):
     await take_screenshot(page, f"{step_name}_coord_{round_num}_before_solve")
     hint_text = "Haz clic en todas las imágenes que contengan el objeto indicado"
 
+    # --- Funciones asíncronas para cada servicio ---
     async def solve_with_2captcha():
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(None, solve_2captcha_coordinates, img_path, hint_text)
@@ -618,37 +628,44 @@ async def solve_coordinate_captcha(page, step_name="coordinate", round_num=1):
     async def solve_with_anticaptcha():
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(None, solve_anticaptcha_coordinates, img_path, hint_text)
-
     tasks = []
     if API_KEY_2CAPTCHA:
-        tasks.append(solve_with_2captcha())
+        tasks.append(solve_2captcha_async())
     if API_KEY_ANTICAPTCHA:
-        tasks.append(solve_with_anticaptcha())
+        tasks.append(solve_anticaptcha_async())
     if not tasks:
         raise Exception("No hay servicios de captcha configurados")
 
-    # Esperar la primera tarea que complete (sin timeout artificial)
-    # Si ambas fallan o una tarda mucho, se quedará esperando hasta que termine.
-    # Para evitar bloqueo infinito, podemos poner un timeout grande (120s) pero déjalo sin timeout y confía en que el servicio responderá.
-    done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-
+    # --- NUEVO BLOQUE: esperar TODAS las tareas con timeout global ---
     coordinates = None
-    for task in done:
-        try:
-            coords = task.result()
-            if coords:
-                coordinates = coords
-                break
-        except Exception as e:
-            logger.warning(f"   Servicio falló: {e}")
-    # Cancelar tareas pendientes
-    for task in pending:
-        task.cancel()
+    errors = []
+    try:
+        # asyncio.wait_for establece un tiempo máximo de espera (55 segundos)
+        # asyncio.gather ejecuta todas las tareas en paralelo y espera a que TODAS terminen (o fallen)
+        # return_exceptions=True convierte las excepciones en objetos para no abortar las otras tareas
+        results = await asyncio.wait_for(
+            asyncio.gather(*tasks, return_exceptions=True),
+            timeout=55
+        )
+    except asyncio.TimeoutError:
+        # Si pasan 55 segundos y ninguna tarea ha terminado (o aún están corriendo)
+        screenshot = await take_screenshot(page, f"{step_name}_coord_{round_num}_timeout")
+        raise Exception(f"CAPTCHA_TIMEOUT round {round_num}. Captura: {screenshot[:100]}...")
+
+    # Procesar los resultados (ya sean coordenadas o excepciones)
+    for res in results:
+        if isinstance(res, Exception):
+            errors.append(str(res))
+            logger.warning(f"   Servicio falló: {res}")
+        elif res:  # lista de coordenadas
+            coordinates = res
+            break
 
     if not coordinates:
         screenshot = await take_screenshot(page, f"{step_name}_coord_{round_num}_no_solution")
-        raise Exception(f"CAPTCHA_NO_SOLUTION round {round_num}. Captura: {screenshot[:100]}...")
+        raise Exception(f"CAPTCHA_NO_SOLUTION round {round_num}. Errores: {errors}. Captura: {screenshot[:100]}...")
 
+    # --- Realizar clics ---
     logger.debug(f"   Coordenadas obtenidas (ronda {round_num}): {coordinates}")
     for point in coordinates:
         abs_x = box['x'] + int(point['x'])
@@ -667,6 +684,13 @@ async def solve_coordinate_captcha(page, step_name="coordinate", round_num=1):
     await page.wait_for_timeout(1000)
     await take_screenshot(page, f"{step_name}_coord_{round_num}_after_solve")
     return True
+
+
+
+
+
+
+
 async def handle_captcha_if_present(page, step_name="captcha"):
     """
     Detecta y resuelve captchas de Amazon.
@@ -2082,8 +2106,8 @@ async def create_amazon_account(country_code, add_address_flag=True, max_retries
                         error_detected = False
 
                         # 14.1 Error de actividad inusual (bloqueo)
-                        if "Detectamos actividad inusual" in content or "no podemos crear una cuenta" in content:
-                            logger.warning("   🚫 ACTIVIDAD INUSUAL -> reinicio interno")
+                        if "Detectamos actividad inusual" in content:
+                            logger.warning("   🚫 ERRORDETECTAMOS ACTIVIDAD INUSUAL -> reinicio interno")
                             raise Exception("AMAZON_BLOCKED_ACCOUNT")
 
                         # 14.2 Número inválido o incorrecto
@@ -2169,9 +2193,15 @@ async def create_amazon_account(country_code, add_address_flag=True, max_retries
                             page_content = await page.content()
                             if "Lo sentimos" in page_content or "no podemos crear tu cuenta" in page_content:
                                 logger.warning("   ❌ Página de error de Amazon detectada (cuenta no permitida). Lanzando excepción para reintento interno.")
-                            
-                            #Si amazon blcok no se resuelve en error interno, habré que manejar para q otros errores que no sea éste sí sem najen coomo error interno
+                                                    # 14.1 Error de actividad inusual (bloqueo)
+                        if "Detectamos actividad inusual" in content:
+                            logger.warning("   🚫 ERRORDETECTAMOS ACTIVIDAD INUSUAL -> reinicio interno")
                             raise Exception("AMAZON_BLOCKED_ACCOUNT")
+                        
+                        #Si amazon blcok no se resuelve en error interno, 
+                        # habré que manejar para q otros errores 
+                        # que no sea éste, sí se manejen como errores interno
+                   
 
                         await change_link.click()
                         await page.wait_for_load_state('domcontentloaded', timeout=15000)
