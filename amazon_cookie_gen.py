@@ -782,7 +782,7 @@ async def handle_captcha_if_present(page, step_name="captcha"):
 
         if has_login_field:
             logger.warning("   Redirigido a la página de inicio de sesión (no a verificación SMS). Amazon bloqueó la cuenta.")
-            raise Exception("AMAZON_BLOCKED_ACCOUNT")
+            raise Exception("AMAZON_REDIRECTED_TO_LOGIN")
 
         # Si no detectamos ninguna, esperar un poco y asumir que avanzó 
         logger.debug("   Captcha resuelto, no se detectó formulario ni SMS. Esperando 3 segundos...")
@@ -1857,7 +1857,7 @@ async def create_amazon_account(country_code, add_address_flag=True, max_retries
                             page_content = await page.content()
                             if "Lo sentimos" in page_content or "no podemos crear tu cuenta" in page_content:
                                 logger.warning("   ❌ Página de error de Amazon detectada (cuenta no permitida). Lanzando excepción para reintento interno.")
-                                raise Exception("AMAZON_BLOCKED_ACCOUNT")
+                                raise Exception("AMAZON_ERROR_LOSENTIMOS")
                             
                             # --- Si no hay error, intentar cambiar número ---
                             logger.debug("   Intentando cambiar número...")
@@ -1897,7 +1897,7 @@ async def create_amazon_account(country_code, add_address_flag=True, max_retries
                                 else:
                                     logger.warning("   ❌ No se pudo extraer la URL del enlace 'Cambiar'")
                                     # Si no se encuentra el enlace, probablemente Amazon ya bloqueó la cuenta
-                                    raise Exception("AMAZON_BLOCKED_ACCOUNT")
+                                    raise Exception("AMAZON_SINENLACE_TRASCAMBIAR")
                             
                             # 3. Si tenemos un enlace (ya sea por selector o por navegación directa)
                             if change_link:
@@ -1981,12 +1981,12 @@ async def create_amazon_account(country_code, add_address_flag=True, max_retries
                         is_login_page = await page.query_selector('#ap_email') is not None
                         
                         if is_login_page:
-                            logger.warning("   🔄 Redirigido a la página de inicio de sesión. Reiniciando proceso interno.")
+                            logger.warning("   🔄 Redirigido a la página de inicio de sesión antes de mandar forms. Reiniciando proceso interno.")
                             # Limpiar cookies? No, mejor lanzar excepción para que el bucle interno reinicie
                             raise Exception("REDIRECTED_TO_LOGIN")
                         elif "Lo sentimos" in page_content or "no podemos crear tu cuenta" in page_content:
                             logger.warning("   ❌ Página de error de Amazon detectada (Lo sentimos, algo falló de nuestra parte). Lanzando excepción para reintento interno.")
-                            raise Exception("AMAZON_BLOCKED_ACCOUNT")
+                            raise Exception("AMAZON_ERROR_LOSENTIMOS")
                         else:
                             # No hay error visible, esperar unos segundos a que quizás el formulario aparezca automáticamente
                             logger.debug("   ℹ️ No se detectó error. Esperando 4 segundos a que el formulario cargue automáticamente...")
@@ -2107,7 +2107,7 @@ async def create_amazon_account(country_code, add_address_flag=True, max_retries
 
                         # 14.1 Error de actividad inusual (bloqueo)
                         if "Detectamos actividad inusual" in content:
-                            logger.warning("   🚫 ERRORDETECTAMOS ACTIVIDAD INUSUAL -> reinicio interno")
+                            logger.warning("   🚫 ERROR: DETECTAMOS ACTIVIDAD INUSUAL -> reinicio interno")
                             raise Exception("AMAZON_BLOCKED_ACCOUNT")
 
                         # 14.2 Número inválido o incorrecto
@@ -2195,7 +2195,7 @@ async def create_amazon_account(country_code, add_address_flag=True, max_retries
                                 logger.warning("   ❌ Página de error de Amazon detectada (cuenta no permitida). Lanzando excepción para reintento interno.")
                                                     # 14.1 Error de actividad inusual (bloqueo)
                         if "Detectamos actividad inusual" in content:
-                            logger.warning("   🚫 ERRORDETECTAMOS ACTIVIDAD INUSUAL -> reinicio interno")
+                            logger.warning("   🚫 ERROR: DETECTAMOS ACTIVIDAD INUSUAL -> reinicio interno")
                             raise Exception("AMAZON_BLOCKED_ACCOUNT")
                         
                         #Si amazon blcok no se resuelve en error interno, 
@@ -2551,7 +2551,7 @@ async def create_amazon_account(country_code, add_address_flag=True, max_retries
                     last_error = e
                     error_str = str(e)
                     # Capturamos cualquier excepción relacionada con FunCaptcha para reintentar internamente
-                    if "SMS_UNAVAILABLE_RETRY" in error_str or "SMS_TIME_OUT" in error_str or "FUNCAPTCHA_NO_SITEKEY" in error_str or "FUNCAPTCHA_NO_TOKEN" in error_str or "FUNCAPTCHA_NOT_DETECTED" in error_str or "AMAZON_BLOCKED_ACCOUNT" in error_str or "REDIRECTED_TO_LOGIN" in error_str:
+                    if "SMS_UNAVAILABLE_RETRY" in error_str or "SMS_TIME_OUT" in error_str or "FUNCAPTCHA_NO_SITEKEY" in error_str or "FUNCAPTCHA_NO_TOKEN" in error_str or "FUNCAPTCHA_NOT_DETECTED" in error_str or "AMAZON_REDIRECTED_TO_LOGIN" in error_str or "AMAZON_SINENLACE_TRASCAMBIAR" in error_str or "AMAZON_ERROR_LOSENTIMOS" in error_str:
                         logger.warning(f"Fallo recuperable (intento interno {internal_attempt}), reiniciando en nueva pestaña...")
                         continue
                     else:
