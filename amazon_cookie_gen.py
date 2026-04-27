@@ -769,7 +769,8 @@ async def handle_captcha_if_present(page, step_name="captcha"):
 
         has_sms_field = await page.query_selector('#cvf-input-code') is not None
         has_reg_form = await page.query_selector('#ap_customer_name') is not None
-        has_login_field = await page.query_selector('#ap_email') is not None and not has_reg_form
+        has_login_field = await page.query_selector('#ap_email') is not None
+        has_proceed_button = await page.query_selector('span#intention-submit-button input.a-button-input') is not None
 
         if has_sms_field:
             logger.debug("   Captcha resuelto, página de verificación SMS detectada. Continuando...")
@@ -780,11 +781,27 @@ async def handle_captcha_if_present(page, step_name="captcha"):
             # No lanzamos excepción, simplemente retornamos True para que el flujo principal evalúe el error
             return True
 
-        if has_login_field:
+        if has_proceed_button:
+            logger.debug("   ✅ Captcha resuelto, detectada página intermedia 'Proceder a crear una cuenta'. Haciendo clic...")
+            await smart_click(page, 'span#intention-submit-button input.a-button-input', timeout=5000, wait_for_navigation=False)
+            await page.wait_for_timeout(2000)
+            # Verificar si el clic llevó al formulario de registro
+            if await page.wait_for_selector('#ap_customer_name', state='visible', timeout=10000):
+                logger.debug("   ✅ Formulario de registro cargado después del clic en proceder")
+                return True
+            else:
+                # Si no apareció el formulario, quizás redirigió a login
+                if await page.query_selector('#ap_email') is not None:
+                    logger.warning("   Redirigido a login después del clic en proceder. Lanzando excepción.")
+                    raise Exception("AMAZON_REDIRECTED_TO_LOGIN")
+                else:
+                    raise Exception("UNKNOWN_STATE_AFTER_CAPTCHA")
+
+        if has_login_field and not has_reg_form:
             logger.warning("   Redirigido a la página de inicio de sesión (no a verificación SMS). Amazon bloqueó la cuenta.")
             raise Exception("AMAZON_REDIRECTED_TO_LOGIN")
 
-        # Si no detectamos ninguna, esperar un poco y asumir que avanzó 
+        # Si no detectamos ninguna, esperar un poco y asumir que avanzó
         logger.debug("   Captcha resuelto, no se detectó formulario ni SMS. Esperando 3 segundos...")
         await page.wait_for_timeout(3000)
         if await page.query_selector('#cvf-input-code') is not None:
@@ -1856,7 +1873,7 @@ async def create_amazon_account(country_code, add_address_flag=True, max_retries
                             # --- PRIMERO: Verificar si hay error de bloqueo de Amazon ---
                             page_content = await page.content()
                             if "Lo sentimos" in page_content or "no podemos crear tu cuenta" in page_content:
-                                logger.warning("   ❌ Página de error de Amazon detectada (Lo sentimos, algo falló de nuestra parte). Lanzando excepción para reintento interno.")
+                                logger.warning("   ❌ Página de error de Amazon detectada (Lo sentimos, no podemos crear tu cuenta). Lanzando excepción para reintento interno.")
                                 raise Exception("AMAZON_ERROR_LOSENTIMOS")
                             
                             # --- Si no hay error, intentar cambiar número ---
@@ -1985,7 +2002,7 @@ async def create_amazon_account(country_code, add_address_flag=True, max_retries
                             # Limpiar cookies? No, mejor lanzar excepción para que el bucle interno reinicie
                             raise Exception("AMAZON_REDIRECTED_TO_LOGIN")
                         elif "Lo sentimos" in page_content or "no podemos crear tu cuenta" in page_content:
-                            logger.warning("   ❌ Página de error de Amazon detectada (Lo sentimos, algo falló de nuestra parte). Lanzando excepción para reintento  .")
+                            logger.warning("   ❌ Página de error de Amazon detectada (Lo sentimos, no podemos crear tu cuenta). Lanzando excepción para reintento  .")
                             raise Exception("AMAZON_ERROR_LOSENTIMOS")
                         else:
                             # No hay error visible, esperar unos segundos a que quizás el formulario aparezca automáticamente
