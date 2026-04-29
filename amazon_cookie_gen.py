@@ -2215,8 +2215,14 @@ async def create_amazon_account(country_code, add_address_flag=True, max_retries
 
                     # ----- PASO 10.3: Manejar números ya registrados (bucle de cambio) -----
                     if "claim?" in page.url.lower():
+
                         logger.warning("⚠️ Número ya registrado detectado en el paso de registro.")
+                        page_content = await page.content()
+                        if "Lo sentimos" in page_content or "no podemos crear tu cuenta" in page_content:
+                            logger.warning("   ❌ Página de error de Amazon detectada (Lo sentimos, no podemos crear tu cuenta). Lanzando excepción para reintento  .")
+                            raise Exception("AMAZON_ERROR_LOSENTIMOS")
                         try:
+
                             phone_info, service_id, service_name, purchase_country = await handle_registered_number(
                                 page, phone_info, service_id, service_name, country_code,
                                 phone_field_selector, continue_selectors, account_data
