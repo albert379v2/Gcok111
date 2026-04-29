@@ -588,8 +588,7 @@ async def handle_captcha_if_present(page, step_name="captcha"):
     """
     logger.debug(f"🔍 Verificando captcha en paso: {step_name}")
     await page.wait_for_timeout(3000)
-
-    # ---------- 1. CAPTCHA DE COORDENADAS (con manejo de múltiples rondas) ----------
+    # ---------- 1. CAPTCHA DE COORDENADAS (con manejo de múltiples rondas Y espera de nuevo canvas) ----------
     content = await page.content()
     coordinate_indicators = ["Resuelve esta adivinanza para proteger tu cuenta", "Elija todo", "Selecciona todas las imágenes"]
     if any(indicator in content for indicator in coordinate_indicators):
@@ -600,140 +599,116 @@ async def handle_captcha_if_present(page, step_name="captcha"):
         while round_num <= max_coordinate_rounds:
             logger.debug(f"   Intento de coordenadas #{round_num}")
             solved = False
-            # Intentar resolver la misma ronda hasta 3 veces si hay timeout
-            for retry in range(3):   # máximo 3 reintentos por ronda
+            
+            # Intentar resolver la misma ronda hasta 3 veces (refreshes)
+            for retry in range(3):
                 try:
                     await solve_coordinate_captcha(page, f"{step_name}_coord", round_num)
                     solved = True
-                    break   # salir del bucle de reintentos si se resolvió
+                    break
                 except Exception as captcha_err:
                     error_str = str(captcha_err)
                     if "CAPTCHA_TIMEOUT" in error_str:
                         logger.warning(f"   Timeout en ronda {round_num}, reintento {retry+1}/3. Esperando nuevo canvas...")
-                        # Esperar 6 segundos a que el canvas cambie (Amazon tarda ~3-4, ponemos 6 por seguridad)
                         await page.wait_for_timeout(6000)
-                        continue   # reintentar la misma ronda
+                        continue
                     else:
-                        # Otro error fatal (no se encontró canvas, bounding box, etc.)
                         logger.error(f"   Error fatal en ronda {round_num}: {captcha_err}")
                         await take_screenshot(page, f"{step_name}_coord_error_round_{round_num}")
-                        raise   # salir del bucle y del flujo
+                        raise
+            
             if not solved:
-                # Si después de 3 reintentos no se resolvió, pasar a la siguiente ronda
                 logger.warning(f"   No se pudo resolver ronda {round_num} después de reintentos, pasando a siguiente ronda")
                 round_num += 1
                 continue
             
-            # Si se resolvió correctamente
-            await page.wait_for_timeout(2000)
-            new_content = await page.content()
-            if not any(indicator in new_content for indicator in coordinate_indicators):
-                logger.debug(f"   ✅ Captura de coordenadas completada después de {round_num} ronda(s)")
-                await page.wait_for_timeout(2000)
-                break   # salir del bucle principal
-            # Si aún hay captcha, avanzar a la siguiente ronda
-            round_num += 1
-            if round_num > max_coordinate_rounds:
-                logger.warning("   Se alcanzó el máximo de rondas para captcha de coordenadas")
-                screenshot = await take_screenshot(page, "coordinate_captcha_max_rounds")
-                raise Exception("COORDINATE_CAPTCHA_MAX_ROUNDS")
+            # --- ESPERA INTELIGENTE PARA DETECTAR LA SIGUIENTE RONDA O EL ÉXITO FINAL ---
+            logger.debug(f"   Ronda {round_num} resuelta. Esperando actualización de la página...")
+            await page.wait_for_timeout(3000)  # Espera base de 3 segundos
             
-            # Esperar a que la página se actualice (2 segundos)
-            await page.wait_for_timeout(2000)
+            # Esperar hasta 20 segundos a que ocurra una de estas condiciones:
+            # - Aparece un nuevo canvas (siguiente ronda)
+            # - Aparece el campo de SMS (captcha completado)
+            # - Aparece el formulario de registro (error de validación)
+            # - Aparece el botón "Proceder a crear una cuenta"
+            # - Se redirige a login (bloqueo)
             
-            # Verificar si aún hay captcha de coordenadas
-            new_content = await page.content()
-            if not any(indicator in new_content for indicator in coordinate_indicators):
-                logger.debug(f"   ✅ Captura de coordenadas completada después de {round_num} ronda(s)")
-                # Esperar un poco más para que el formulario se estabilice
-                await page.wait_for_timeout(2000)
-                break
-            if round_num == max_coordinate_rounds:
-                logger.warning("   Se alcanzó el máximo de rondas para captcha de coordenadas")
-                screenshot = await take_screenshot(page, "coordinate_captcha_max_rounds")
-                raise Exception("COORDINATE_CAPTCHA_MAX_ROUNDS")
-            
-
-            
-            # Dentro de handle_captcha_if_present, después de resolver el captcha de coordenadas
-            # (reemplazar el bloque "Después de resolver el captcha" completo)
-
-            logger.debug("   Esperando que la página avance después del captcha...")
-            await page.unroute('**/*')  # quitar bloqueo temporalmente
-            await page.route('**/*', lambda route: route.continue_())  # permitir todo
-            await page.wait_for_timeout(2000)
-
-            await log_current_url(page, "post_captcha_unblocked")
-            await take_screenshot(page, "post_captcha_initial")
-
             start_wait = time.time()
-            timeout_wait = 30
-            found = False
+            timeout_wait = 20
+            next_round_detected = False
+            final_success = False
+            
             while time.time() - start_wait < timeout_wait:
-                current_url = await log_current_url(page, "waiting_loop")
+                # 1. Buscar nuevo canvas (indicador de siguiente ronda)
+                new_canvas = await page.query_selector('canvas')
+                if new_canvas:
+                    # Verificar que el canvas sea visible y tenga tamaño > 0
+                    box = await new_canvas.bounding_box()
+                    if box and box['width'] > 50 and box['height'] > 50:
+                        logger.debug("   Nuevo canvas detectado, continuando con siguiente ronda...")
+                        next_round_detected = True
+                        break
                 
-                # Detectar campo SMS
-                sms_field = await page.query_selector('#cvf-input-code, #cvf-input-otp, #otp-code, input[name="otpCode"], input[type="tel"]')
+                # 2. Buscar campo de SMS (código)
+                sms_field = await page.query_selector('#cvf-input-code, #cvf-input-otp, input[name="otpCode"]')
                 if sms_field:
-                    logger.debug("   ✅ Página de verificación SMS detectada. Continuando...")
-                    found = True
+                    logger.debug("   ✅ Página de verificación SMS detectada después de coordenadas.")
+                    final_success = True
                     break
                 
-                # Botón "Proceder a crear una cuenta"
-                proceed = await page.query_selector('span#intention-submit-button input.a-button-input, input[value="Proceder a crear una cuenta"], button:has-text("Proceder")')
+                # 3. Buscar formulario de registro (error de validación)
+                if await page.query_selector('#ap_customer_name'):
+                    logger.debug("   Formulario de registro detectado (posible error).")
+                    final_success = True
+                    break
+                
+                # 4. Buscar botón "Proceder a crear una cuenta"
+                proceed = await page.query_selector('span#intention-submit-button input.a-button-input')
                 if proceed:
-                    logger.debug("   🔘 Botón 'Proceder' detectado, haciendo clic...")
+                    logger.debug("   Botón 'Proceder' detectado, haciendo clic...")
                     await proceed.click()
                     await page.wait_for_timeout(3000)
-                    await log_current_url(page, "after_proceed_click")
-                    # Puede que ahora aparezca el formulario de registro
-                    if await page.wait_for_selector('#ap_customer_name', timeout=8000):
-                        logger.debug("   ✅ Formulario de registro cargado después de proceder.")
-                        found = True
-                        break
-                    else:
-                        continue
+                    continue  # seguir esperando después del clic
                 
-                # Formulario de registro
-                if await page.query_selector('#ap_customer_name'):
-                    logger.debug("   ✅ Formulario de registro detectado (posible error de validación).")
-                    found = True
-                    break
-                
-                # Selección SMS vs WhatsApp
-                whatsapp = await page.query_selector('#secondary_channel_button input.a-button-input, button:has-text("Enviar código por SMS")')
-                if whatsapp:
-                    logger.debug("   📱 Pantalla de selección de método detectada. Seleccionando SMS...")
-                    await whatsapp.click()
-                    await page.wait_for_timeout(3000)
-                    continue
-                
-                # Redirección a login (error)
+                # 5. Redirección a login
                 if await page.query_selector('#ap_email'):
-                    logger.warning("   🚫 Redirigido a página de login. Amazon bloqueó la cuenta.")
-                    await take_screenshot(page, "redirected_to_login_after_captcha")
-                    raise Exception(f"AMAZON_REDIRECTED_TO_LOGIN - URL: {current_url}")
-                
-                # Error general
-                content = await page.content()
-                if "Lo sentimos" in content or "no podemos crear tu cuenta" in content:
-                    logger.warning("   ❌ Página de error de Amazon detectada.")
-                    await take_screenshot(page, "error_page_after_captcha")
-                    raise Exception(f"AMAZON_ERROR_LOSENTIMOS - URL: {current_url}")
+                    logger.warning("   🚫 Redirigido a página de login después de coordenadas.")
+                    raise Exception("AMAZON_REDIRECTED_TO_LOGIN")
                 
                 await page.wait_for_timeout(1000)
-
-            if not found:
-                current_url = await log_current_url(page, "unknown_state")
-                await take_screenshot(page, f"unknown_state_final_{int(time.time())}")
-                raise Exception(f"UNKNOWN_STATE_AFTER_CAPTCHA - URL: {current_url}")
-
-            # Restaurar el bloqueo de recursos si se desea (opcional)
-            await page.route('**/*', block_resources)
-            return True
+            
+            if final_success:
+                logger.debug(f"   ✅ Captcha completado después de {round_num} ronda(s).")
+                await page.wait_for_timeout(2000)
+                break
+            
+            if next_round_detected:
+                round_num += 1
+                if round_num > max_coordinate_rounds:
+                    logger.warning("   Se alcanzó el máximo de rondas para captcha de coordenadas")
+                    screenshot = await take_screenshot(page, "coordinate_captcha_max_rounds")
+                    raise Exception("COORDINATE_CAPTCHA_MAX_ROUNDS")
+                # Continuar con la siguiente ronda (el bucle while lo hará automáticamente)
+                continue
+            else:
+                # No se detectó nuevo canvas ni SMS ni formulario: error
+                screenshot = await take_screenshot(page, "coordinate_captcha_stuck")
+                raise Exception(f"COORDINATE_CAPTCHA_STUCK - No avanzó después de ronda {round_num}")
+        
+        # Después del bucle de coordenadas, continuar con la verificación de estado
+        # (el código que ya tienes para manejar SMS, registro, etc.)
 
         # ---------- 2. FUNCAPTCHA (ARKOSE) ----------
     title = await page.title()
+
+
+
+
+
+
+
+
+    
     if "Confirma tu identidad" in title or "Verify your identity" in title:
         logger.debug("   Página 'Confirma tu identidad' detectada")
         await page.wait_for_timeout(3000)
@@ -2429,11 +2404,7 @@ async def create_amazon_account(country_code, add_address_flag=True, max_retries
                             error_msg = await page.query_selector('.a-alert-content, .a-alert-error')
                             if error_msg:
                                 error_text = await error_msg.text_content()
-                                if "Hemos enviado tu OTP" in error_text:
-                                    logger.debug("   ℹ️ Mensaje de envío detectado, esperando campo de código...")
-                                    await page.wait_for_timeout(3000)
-                                    code_input = await page.wait_for_selector('#cvf-input-code', state='visible', timeout=30000)
-                                elif "No se puede enviar un mensaje SMS" in error_text or "Verifica a través de WhatsApp" in error_text:
+                                if "No se puede enviar un mensaje SMS" in error_text or "Verifica a través de WhatsApp" in error_text:
                                     # ----- 1. Hacer clic en "Verificar usando WhatsApp" -----
                                     logger.warning(f"⚠️ SMS no disponible: {error_text}. Haciendo clic en 'Verificar usando WhatsApp'...")
                                     whatsapp_btn = await page.query_selector('#secondary_channel_button input.a-button-input')
@@ -2446,6 +2417,13 @@ async def create_amazon_account(country_code, add_address_flag=True, max_retries
                                         await page.wait_for_timeout(3000)
                                     else:
                                         logger.warning("   ⚠️ No se encontró botón de WhatsApp, continuando...")
+                                elif "Hemos enviado tu OTP" in error_text:
+                                    logger.debug("   ℹ️ Mensaje de envío detectado, esperando campo de código...")
+                                    await page.wait_for_timeout(3000)
+                                    code_input = await page.wait_for_selector('#cvf-input-code', state='visible', timeout=30000)
+                                
+                                
+
 
                                     # ----- 2. Cancelar el número actual (opcional) -----
                                     try:
