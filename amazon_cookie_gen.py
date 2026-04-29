@@ -138,6 +138,12 @@ wallet_urls = {
 }
 
 # -------------------------------------------------------------------
+# ÓRDENES DE PAÍSES PARA SMS (usados en get_phone_number y en verificación SMS)
+# -------------------------------------------------------------------
+HERO_COUNTRY_ORDER = ['CM', 'BR', 'KZ', 'ID', 'MA', 'KG', 'CO', 'MX']
+FIVESIM_MANUAL_ORDER = ['CO', 'LV', 'PK', 'TJ', 'KE', 'MX']
+
+# -------------------------------------------------------------------
 # LOGGING
 # -------------------------------------------------------------------
 logging.basicConfig(
@@ -1357,10 +1363,10 @@ async def get_phone_number(account_country, force_service=None, force_country=No
     }
 
     # Orden de países por precio (barato a caro) para Hero
-    hero_order = ['CM', 'BR', 'KZ', 'ID', 'MA', 'KG', 'CO', 'MX']
+    hero_order = HERO_COUNTRY_ORDER 
 
     # Orden manual para 5sim (si no se pueden obtener precios)
-    FIVESIM_MANUAL_ORDER = ['CO', 'LV', 'PK', 'TJ', 'KE', 'MX']
+    FIVESIM_MANUAL_ORDER = FIVESIM_MANUAL_ORDER
 
     # Para 5sim, obtener precios reales
     fivesim_prices = await get_fivesim_prices()
@@ -2316,280 +2322,178 @@ async def create_amazon_account(country_code, add_address_flag=True, max_retries
 
 
 
-
-
-
                     # =================================================================
-                    # PASO 15: VERIFICACIÓN POR SMS (CON REINTENTOS DE NÚMERO)
+                    # PASO 15: VERIFICACIÓN POR SMS (CON REINTENTOS POR PAÍS Y NÚMERO)
                     # =================================================================
-                    logger.debug("📱 Verificación SMS con reintentos de número...")
+                    logger.debug("📱 Verificación SMS con reintentos por país y número...")
                     await page.wait_for_timeout(5000)
 
-                    # --- Función local para cambiar de número y reiniciar el flujo de registro ---
-                    async def cambiar_numero_y_reiniciar():
-                        nonlocal phone_info, service_id, service_name, purchase_country, account_data
-                        logger.debug("🔄 Cambiando número desde la página de verificación SMS...")
+                    # --- Obtener el servicio actual (hero o 5sim) y su lista de países ordenada ---
+                    current_service = phone_info['service_name']
+                    countries_to_try = []
+                    if current_service == 'hero':
+                        countries_to_try = HERO_COUNTRY_ORDER
+                    elif current_service == '5sim':
+                        # Para 5sim, obtener precios reales para ordenar por costo
+                        fivesim_prices = await get_fivesim_prices()
+                        if fivesim_prices:
+                            countries_to_try = list(fivesim_prices.keys())
+                        else:
+                            countries_to_try = FIVESIM_MANUAL_ORDER
+                    else:
+                        countries_to_try = [country_code]
 
-                        # 1. Buscar y hacer clic en "Cambiar"
-                        change_selectors = [
-                            'a:has-text("Cambiar")',
-                            'a[href*="/ap/register?"]',
-                            'a.a-link-normal[href*="register"]',
-                            'a[href*="sign_in_otp_change"]'
-                        ]
-                        change_link = None
-                        for sel in change_selectors:
-                            try:
-                                change_link = await page.wait_for_selector(sel, timeout=5000)
-                                if change_link:
-                                    logger.debug(f"   Enlace 'Cambiar' encontrado: {sel}")
-                                    break
-                            except:
-                                continue
-                        if not change_link:
-                            # Verificar si la página muestra "Lo sentimos" (bloqueo)
-                            page_content = await page.content()
-                            if "Lo sentimos" in page_content or "no podemos crear tu cuenta" in page_content:
-                                logger.warning("   ❌ Página de error de Amazon detectada. Lanzando excepción para reinicio interno.")
-                                raise Exception("AMAZON_ERROR_LOSENTIMOS")
-                            else:
-                                raise Exception("NO_CHANGE_LINK_FOUND")
+                    # Determinar el índice inicial del país (el que se usó actualmente)
+                    current_country = phone_info['purchase_country']
+                    try:
+                        start_index = countries_to_try.index(current_country)
+                    except ValueError:
+                        start_index = 0
 
-                        await change_link.click()
-                        await page.wait_for_load_state('domcontentloaded', timeout=15000)
-                        await page.wait_for_timeout(2000)
+                    max_countries_to_try = min(3, len(countries_to_try))   # máximo 3 países diferentes
+                    max_number_attempts_per_country = 2                    # intentos por país
 
-                        # 2. Obtener nuevo número (mismo servicio, pero sin forzar país -> probará todos los países de ese servicio)
-                        current_service = phone_info['service_name']
-                        # NOTA: Ya no forzamos el país, solo el servicio. Así probará otros países si el actual no tiene números.
-                        new_phone = await get_phone_number(country_code, force_service=current_service, force_country=None)
-                        if not new_phone:
-                            raise Exception("No se pudo obtener otro número (se agotaron los países para este servicio)")
-
-                        # 3. Actualizar variables
-                        phone_info = new_phone
-                        account_data['phone'] = phone_info['local']
-                        service_id = phone_info['service_id']
-                        service_name = phone_info['service_name']
-                        purchase_country = phone_info['purchase_country']
-                        logger.debug(f"   ✅ Nuevo número obtenido: {phone_info['full']} (país: {purchase_country})")
-
-                        # 4. Ingresar el nuevo número y hacer clic en "Continuar"
-                        phone_field = await page.wait_for_selector(phone_field_selector, timeout=10000)
-                        await phone_field.fill('')
-                        await phone_field.fill(phone_info['full'])
-                        continue_clicked = False
-                        for sel in ['input.a-button-input', 'button#continue']:
-                            if await smart_click(page, sel, wait_for_navigation=True):
-                                continue_clicked = True
-                                break
-                        if not continue_clicked:
-                            raise Exception("No se encontró botón Continuar después de cambiar número")
-
-
-
-
-
-
-                        # Dentro de la sección donde se espera el código SMS
-                        # ... después de algún error que indique número registrado
-                        if "claim?" in page.url.lower():
-                            logger.warning("⚠️ Número ya registrado durante verificación SMS. Cambiando...")
-                            try:
-                                phone_info, service_id, service_name, purchase_country = await handle_registered_number(
-                                    page, phone_info, service_id, service_name, country_code,
-                                    phone_field_selector, continue_selectors, account_data
-                                )
-                                # Actualizar variables
-                                account_data['phone'] = phone_info['local']
-                                account_data['purchase_country'] = purchase_country
-                                # Reiniciar el bucle de verificación SMS (por ejemplo, hacer continue)
-                            except Exception as e:
-                                logger.error(f"Error cambiando número registrado en paso SMS: {e}")
-                                raise
-
-
-
-
-
-                        # 5. Esperar la página intermedia "Proceder a crear una cuenta"
-                        await page.wait_for_timeout(3000)
-                        primary_selector = 'span#intention-submit-button input.a-button-input'
-                        if not await smart_click(page, primary_selector, wait_for_navigation=False):
-                            await page.wait_for_timeout(4000)
-
-                        # 6. Llamar a la función común de envío del formulario
-                        await enviar_formulario_registro()
-                        # Al salir, la página ya estará en la pantalla de verificación SMS
-
-                    # --- Bucle de reintentos de número (hasta 3 números) ---
-                    max_number_attempts = 6
                     sms_success = False
-                    for num_att in range(1, max_number_attempts + 1):
-                        logger.debug(f"📞 Intento de número {num_att}/{max_number_attempts}")
+                    countries_tested = 0
+                    country_idx = start_index
 
+                    while countries_tested < max_countries_to_try and not sms_success:
+                        test_country = countries_to_try[country_idx % len(countries_to_try)]
+                        logger.debug(f"🌍 Probando país: {test_country} (intento de país {countries_tested+1}/{max_countries_to_try})")
 
+                        for num_att in range(1, max_number_attempts_per_country + 1):
+                            logger.debug(f"   📞 Intento de número #{num_att} para país {test_country}")
 
-                        # 15.1 Manejar posible página de WhatsApp
-                        content = await safe_get_content(page)
-                        if "Verificar con WhatsApp" in content or "Enviar código por SMS" in content:
-                            logger.warning("📱 WhatsApp detectado, seleccionando SMS...")
-                            sms_option = await page.query_selector('#secondary_channel_button input.a-button-input')
-                            if not sms_option:
-                                sms_option = await page.query_selector('#secondary_channel_button')
-                            if not sms_option:
-                                sms_option = await page.query_selector('xpath=//*[contains(text(), "Enviar código por SMS")]')
-                            if sms_option:
-                                await sms_option.click()
-                                logger.debug("   Clic en 'Enviar código por SMS'")
-                                await page.wait_for_load_state('load', timeout=15000)
-
-                        # 15.2 Esperar campo de código
-                        try:
-                            code_input = await page.wait_for_selector('#cvf-input-code', state='visible', timeout=30000)
-                        except Exception as e:
-                            error_msg = await page.query_selector('.a-alert-content, .a-alert-error')
-                            if error_msg:
-                                error_text = await error_msg.text_content()
-                                if "No se puede enviar un mensaje SMS" in error_text or "Verifica a través de WhatsApp" in error_text:
-                                    # ----- 1. Hacer clic en "Verificar usando WhatsApp" -----
-                                    logger.warning(f"⚠️ SMS no disponible: {error_text}. Haciendo clic en 'Verificar usando WhatsApp'...")
-                                    whatsapp_btn = await page.query_selector('#secondary_channel_button input.a-button-input')
-                                    if not whatsapp_btn:
-                                        whatsapp_btn = await page.query_selector('#secondary_channel_button')
-                                    if whatsapp_btn:
-                                        await whatsapp_btn.click()
-                                        logger.debug("   ✅ Clic en 'Verificar usando WhatsApp'")
-                                        await page.wait_for_load_state('load', timeout=15000)
-                                        await page.wait_for_timeout(3000)
-                                    else:
-                                        logger.warning("   ⚠️ No se encontró botón de WhatsApp, continuando...")
-
-                                    
-
-                                    # ----- 2. Cancelar el número actual (opcional) -----
+                            # Si no es el primer intento de este país, obtener un nuevo número
+                            if num_att > 1 or (num_att == 1 and test_country != current_country):
+                                # Cancelar el número anterior si existe
+                                if 'service_id' in locals() and service_id:
                                     try:
-                                        if service_name == 'hero':
+                                        if current_service == 'hero':
                                             await cancel_hero_sms(service_id)
-                                        elif service_name == '5sim':
+                                        elif current_service == '5sim':
                                             await cancel_fivesim(service_id)
                                     except Exception as e:
-                                        logger.error(f"❌ Error al cancelar SMS: {e}")
+                                        logger.debug(f"   ⚠️ Error cancelando número anterior: {e}")
 
-                                    # ----- 3. Cambiar de número (sin reiniciar pestaña) -----
-                                    await cambiar_numero_y_reiniciar()
-                                    # Continuar con el siguiente intento del bucle (siguiente número)
-                                    continue
+                                # Obtener nuevo número forzando servicio y país
+                                new_phone_info = await get_phone_number(country_code, force_service=current_service, force_country=test_country)
+                                if not new_phone_info:
+                                    logger.warning(f"   ❌ No se pudo obtener número para país {test_country}")
+                                    break   # pasar al siguiente país
 
-                                elif "Hemos enviado tu OTP" in error_text:
-                                    logger.debug("   ℹ️ Mensaje de envío detectado, esperando campo de código...")
-                                    await page.wait_for_timeout(3000)
-                                    code_input = await page.wait_for_selector('#cvf-input-code', state='visible', timeout=30000)
-                                
-                                
+                                # Actualizar variables
+                                phone_info = new_phone_info
+                                account_data['phone'] = phone_info['local']
+                                service_id = phone_info['service_id']
+                                service_name = phone_info['service_name']
+                                purchase_country = phone_info['purchase_country']
+                                logger.debug(f"   ✅ Nuevo número obtenido: {phone_info['full']} (país: {purchase_country})")
 
-                                else:
-                                    logger.error(f"❌ Error en verificación SMS: {error_text}")
-                                    raise Exception(f"Error en verificación SMS: {error_text}")
-                            else:
-                                raise Exception(f"Campo de código no apareció y no se detectó mensaje de error: {e}")
+                                # --- Navegar de nuevo al formulario de registro (cambiar número) ---
+                                # Buscar enlace "Cambiar"
+                                change_link_found = False
+                                for sel in ['a:has-text("Cambiar")', 'a[href*="/ap/register?"]', 'a[href*="sign_in_otp_change"]']:
+                                    try:
+                                        change_link = await page.wait_for_selector(sel, timeout=5000)
+                                        if change_link:
+                                            await change_link.click()
+                                            await page.wait_for_load_state('domcontentloaded', timeout=15000)
+                                            change_link_found = True
+                                            break
+                                    except:
+                                        continue
+                                if not change_link_found:
+                                    logger.warning("   ⚠️ No se encontró enlace 'Cambiar', asumiendo que ya estamos en la pantalla de número")
 
-                        # 15.3 Esperar código SMS (2 minutos, reenvío cada 40s)
-                        sms_code = await wait_for_sms_code_with_retry(service_name, service_id, page, timeout_total=120, resend_interval=40)
-                        if sms_code:
-                            # Esperar a que el campo de código esté presente (hasta 5 segundos)
-                            code_input = None
-                            for _ in range(5):
-                                code_input = await page.query_selector('#cvf-input-code')
-                                if code_input and await code_input.is_visible():
-                                    break
-                                await page.wait_for_timeout(1000)
-                            if not code_input:
-                                logger.warning("   Campo de código no encontrado después de reenviar, reintentando...")
-                                continue  # volver a esperar el código (el bucle de 2 minutos sigue)
-                            # Limpiar el campo antes de escribir (por si hay texto residual)
-                            await code_input.fill('')
-                            await code_input.fill(sms_code)
-                            logger.debug(f"   ✅ Código SMS ingresado: {sms_code}")
-                            verify_btn = await page.query_selector('input[type="submit"], button:has-text("Verificar"), button:has-text("Verify")')
-                            if verify_btn:
-                                await verify_btn.click()
-                                await page.wait_for_load_state('domcontentloaded', timeout=NAVIGATION_TIMEOUT*1000)
-                                if 'your-account' in page.url.lower() or 'account' in page.url.lower():
-                                    sms_success = True
-                                    break
-                                else:
-                                    logger.warning("Código incorrecto o no redirigió")
-                            else:
-                                logger.warning("No se encontró botón de verificar")
-                        else:
-                            logger.warning(f"⏰ No se recibió código en 2 minutos (intento {num_att})")
-                            # Cancelar número (opcional)
+                                # Rellenar nuevo número
+                                phone_field = await page.wait_for_selector(phone_field_selector, timeout=10000)
+                                await phone_field.fill('')
+                                await phone_field.fill(phone_info['full'])
+                                # Hacer clic en Continuar
+                                continue_clicked = False
+                                for sel in ['input.a-button-input', 'button#continue']:
+                                    if await smart_click(page, sel, wait_for_navigation=True):
+                                        continue_clicked = True
+                                        break
+                                if not continue_clicked:
+                                    raise Exception("No se encontró botón Continuar después de cambiar número")
+
+                                # Esperar la página intermedia "Proceder a crear una cuenta"
+                                await page.wait_for_timeout(3000)
+                                primary_selector = 'span#intention-submit-button input.a-button-input'
+                                if not await smart_click(page, primary_selector, wait_for_navigation=False):
+                                    await page.wait_for_timeout(4000)
+
+                                # Reenviar el formulario de registro
+                                await enviar_formulario_registro()
+                                # Después de esto, la página debería estar en la pantalla de verificación SMS (con el nuevo número)
+
+                            # --- Ahora esperar el código SMS ---
+                            # Manejar posible página de WhatsApp
+                            content = await safe_get_content(page)
+                            if "Verificar con WhatsApp" in content or "Enviar código por SMS" in content:
+                                logger.warning("📱 WhatsApp detectado, seleccionando SMS...")
+                                sms_option = await page.query_selector('#secondary_channel_button input.a-button-input')
+                                if not sms_option:
+                                    sms_option = await page.query_selector('#secondary_channel_button')
+                                if sms_option:
+                                    await sms_option.click()
+                                    logger.debug("   Clic en 'Enviar código por SMS'")
+                                    await page.wait_for_load_state('load', timeout=15000)
+
+                            # Esperar campo de código
                             try:
-                                if service_name == 'hero':
-                                    await cancel_hero_sms(service_id)
-                                elif service_name == '5sim':
-                                    await cancel_fivesim(service_id)
-                            except:
-                                pass
+                                code_input = await page.wait_for_selector('#cvf-input-code', state='visible', timeout=30000)
+                            except Exception as e:
+                                error_msg = await page.query_selector('.a-alert-content, .a-alert-error')
+                                if error_msg:
+                                    error_text = await error_msg.text_content()
+                                    if "No se puede enviar un mensaje SMS" in error_text or "Verifica a través de WhatsApp" in error_text:
+                                        logger.warning(f"⚠️ SMS no disponible para {test_country} (intento {num_att})")
+                                        # Si quedan intentos de número, continuar con el siguiente número del mismo país
+                                        if num_att < max_number_attempts_per_country:
+                                            logger.debug("   🔄 Intentando con otro número del mismo país...")
+                                            continue   # saltar a la siguiente iteración del bucle de números
+                                        else:
+                                            logger.warning(f"   Se agotaron los números para {test_country}, pasando al siguiente país.")
+                                            break    # sale del bucle de números y pasa al siguiente país
+                                    else:
+                                        logger.error(f"❌ Error inesperado: {error_text}")
+                                        raise Exception(f"Error en verificación SMS: {error_text}")
+                                else:
+                                    raise Exception(f"Campo de código no apareció: {e}")
 
-                            # Si es el último intento, fallar
-                            if num_att == max_number_attempts:
-                                raise Exception("No se pudo verificar SMS después de varios números")
+                            # Esperar código SMS (con reenvío automático)
+                            sms_code = await wait_for_sms_code_with_retry(service_name, service_id, page, timeout_total=120, resend_interval=40)
+                            if sms_code:
+                                # Limpiar campo e ingresar código
+                                await code_input.fill('')
+                                await code_input.fill(sms_code)
+                                logger.debug(f"   ✅ Código SMS ingresado: {sms_code}")
+                                verify_btn = await page.query_selector('input[type="submit"], button:has-text("Verificar"), button:has-text("Verify")')
+                                if verify_btn:
+                                    await verify_btn.click()
+                                    await page.wait_for_load_state('domcontentloaded', timeout=15000)
+                                    if 'your-account' in page.url.lower() or 'account' in page.url.lower():
+                                        logger.debug("   ✅ Registro exitoso después de SMS.")
+                                        sms_success = True
+                                        break
+                                    else:
+                                        logger.warning("   Código incorrecto o no redirigió, reintentando...")
+                                        continue
+                                else:
+                                    logger.warning("   No se encontró botón de verificar")
+                            else:
+                                logger.warning(f"⏰ No se recibió código en 2 minutos (intento {num_att})")
+                                # Falló este número, continuar con el siguiente número del mismo país
 
-                            # Cambiar de número y reiniciar el proceso de registro
-                            await cambiar_numero_y_reiniciar()
-                            # Al salir de esta función, el bucle continuará con el siguiente número
-                            # (ya se habrá reenviado el formulario y estará nuevamente en la página de SMS)
-                            continue
+                        # Incrementar contador de países probados y pasar al siguiente país
+                        countries_tested += 1
+                        country_idx += 1
 
                     if not sms_success:
-                        raise Exception("Verificación SMS fallida después de todos los intentos")
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+                        raise Exception("Verificación SMS fallida después de probar varios países y números")
 
 
 
