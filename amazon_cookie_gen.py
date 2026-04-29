@@ -140,7 +140,9 @@ wallet_urls = {
 # -------------------------------------------------------------------
 # ÓRDENES DE PAÍSES PARA SMS (usados en get_phone_number y en verificación SMS)
 # -------------------------------------------------------------------
-HERO_COUNTRY_ORDER = ['CM', 'BR', 'KZ', 'ID', 'MA', 'KG', 'CO', 'MX']
+# HERO_COUNTRY_ORDER = ['CM', 'BR', 'KZ', 'ID', 'MA', 'KG', 'CO', 'MX']
+
+HERO_COUNTRY_ORDER = ['CM', 'BR', 'ID', 'MA', 'KG', 'CO', 'MX']
 FIVESIM_MANUAL_ORDER = ['CO', 'LV', 'PK', 'TJ', 'KE', 'MX']
 
 # -------------------------------------------------------------------
@@ -594,7 +596,7 @@ async def handle_captcha_if_present(page, step_name="captcha"):
     """
     logger.debug(f"🔍 Verificando captcha en paso: {step_name}")
     await page.wait_for_timeout(3000)
-    
+
     # ---------- CAPTCHA DE COORDENADAS CON MANEJO INTELIGENTE ----------
     content = await page.content()
     coordinate_indicators = ["Resuelve esta adivinanza para proteger tu cuenta", "Elija todo", "Selecciona todas las imágenes"]
