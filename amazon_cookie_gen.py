@@ -596,137 +596,60 @@ async def handle_captcha_if_present(page, step_name="captcha"):
     """
     logger.debug(f"🔍 Verificando captcha en paso: {step_name}")
     await page.wait_for_timeout(3000)
-
-    # ---------- 1. CAPTCHA DE COORDENADAS - VERSIÓN DEFINITIVA ----------
+    # ---------- 1. CAPTCHA DE COORDENADAS SIMPLIFICADO ----------
     content = await page.content()
     coordinate_indicators = ["Resuelve esta adivinanza", "Elija todo", "Selecciona todas las imágenes", "Seleccione todo"]
     if any(indicator in content for indicator in coordinate_indicators):
         logger.warning("⚠️ Captcha de coordenadas detectado")
         
-        # Bucle infinito hasta completar 3 rondas (con salvaguarda de 100 intentos)
         max_global_attempts = 100
-        global_attempt = 0
-        consecutive_fails = 0
-        last_resolved = 0
+        attempt_count = 0
         
-        # Leer progreso inicial
-        resolved, needed = await get_captcha_progress(page)
-        logger.debug(f"   Progreso inicial: {resolved}/{needed}")
-        
-        while resolved < needed and global_attempt < max_global_attempts:
-            global_attempt += 1
-            logger.debug(f"   [Intento global #{global_attempt}] Progreso: {resolved}/{needed}")
+        while attempt_count < max_global_attempts:
+            attempt_count += 1
+            logger.debug(f"   Intento global #{attempt_count}")
             
-            try:
-                # 1. Guardar identificador del canvas actual
-                canvas_before = await page.query_selector('canvas')
-                canvas_id_before = None
-                if canvas_before:
-                    canvas_id_before = await canvas_before.get_attribute('data-challenge-id')
-                    if not canvas_id_before:
-                        box = await canvas_before.bounding_box()
-                        canvas_id_before = f"{box['x']}_{box['y']}_{box['width']}_{box['height']}" if box else None
-                    logger.debug(f"   Canvas ID actual: {canvas_id_before}")
-                
-                # 2. Resolver el canvas actual (máximo 3 refreshes internos)
-                await solve_coordinate_captcha(page, "coord", round_num=resolved+1)
-                
-                # 3. Esperar 1 segundo y buscar mensajes de error
-                await page.wait_for_timeout(1000)
-                
-                # Buscar mensaje de error (incorrecto o timeout)
-                error_incorrecto = await page.query_selector('.a-alert-content:has-text("Incorrecto"), div:has-text("Incorrecto")')
-                error_timeout = await page.query_selector('.a-alert-content:has-text("superado el límite de tiempo"), div:has-text("límite de tiempo")')
-                
-                if error_incorrecto or error_timeout:
-                    tipo_error = "incorrectas" if error_incorrecto else "timeout"
-                    logger.warning(f"   ❌ Error: coordenadas {tipo_error}")
-                    
-                    if error_timeout:
-                        logger.debug("   ⏰ Límite de tiempo alcanzado. Esperando 8 segundos...")
-                        await page.wait_for_timeout(8000)
-                    else:
-                        logger.debug("   Esperando 5 segundos a que Amazon genere nuevo canvas...")
-                        await page.wait_for_timeout(5000)
-                    
-                    # Verificar si el canvas cambió automáticamente
-                    canvas_after = await page.query_selector('canvas')
-                    canvas_id_after = None
-                    if canvas_after:
-                        canvas_id_after = await canvas_after.get_attribute('data-challenge-id')
-                        if not canvas_id_after:
-                            box = await canvas_after.bounding_box()
-                            canvas_id_after = f"{box['x']}_{box['y']}_{box['width']}_{box['height']}" if box else None
-                    
-                    if canvas_id_after != canvas_id_before:
-                        logger.debug("   ✅ Nuevo canvas detectado automáticamente. Reintentando misma ronda...")
-                    else:
-                        logger.warning("   El canvas no cambió. Forzando refresco manual...")
-                        await click_refresh_button(page)
-                        await page.wait_for_timeout(3000)
-                    
-                    consecutive_fails += 1
-                    if consecutive_fails >= 3:
-                        logger.warning("   Demasiados fallos consecutivos. Reiniciando progreso detectado...")
-                        resolved, needed = await get_captcha_progress(page)
-                        consecutive_fails = 0
-                    continue
-                    
-                # 4. Sin error: esperar cambio de canvas o éxito (hasta 10 segundos)
-                change_result = await wait_for_canvas_change(page, canvas_id_before, timeout=10)
-                
-                if change_result == 'sms' or change_result == 'register':
-                    logger.debug("   ✅ Captcha completado! Pantalla SMS/registro detectada.")
-                    resolved = needed
-                    break
-                elif change_result == 'login':
-                    raise Exception("AMAZON_REDIRECTED_TO_LOGIN")
-                elif change_result == 'new_canvas':
-                    # Esperar un poco y leer nuevo progreso
-                    await page.wait_for_timeout(1500)
-                    new_resolved, new_needed = await get_captcha_progress(page)
-                    logger.debug(f"   Nuevo progreso: {new_resolved}/{new_needed}")
-                    
-                    if new_resolved > resolved:
-                        logger.debug(f"   ✅ Avance: {resolved} → {new_resolved}")
-                        resolved = new_resolved
-                        needed = new_needed if new_needed else needed
-                        consecutive_fails = 0
-                    else:
-                        logger.warning(f"   ❌ El progreso no aumentó (sigue {resolved}/{needed}). Reintentando...")
-                        consecutive_fails += 1
-                        if consecutive_fails >= 3:
-                            logger.warning("   Forzando refresco completo...")
-                            await click_refresh_button(page)
-                            await page.wait_for_timeout(3000)
-                            resolved, needed = await get_captcha_progress(page)
-                            consecutive_fails = 0
-                        continue
-                else:  # None (timeout)
-                    logger.warning("   Timeout esperando cambios. Reintentando...")
-                    consecutive_fails += 1
-                    if consecutive_fails >= 3:
-                        logger.warning("   Forzando refresco...")
-                        await click_refresh_button(page)
-                        await page.wait_for_timeout(3000)
-                        resolved, needed = await get_captcha_progress(page)
-                        consecutive_fails = 0
-                    continue
-                    
-            except Exception as e:
-                logger.error(f"   Error en intento global: {e}")
-                consecutive_fails += 1
-                if consecutive_fails >= 3:
-                    raise
+            # Intentar resolver el canvas actual (4 peticiones, comparación)
+            success = await solve_coordinate_captcha(page, "coord", round_num=attempt_count)
+            
+            if not success:
+                # No se obtuvo consenso: refrescar canvas
+                logger.warning("   No hay consenso entre respuestas, refrescando canvas...")
+                await click_refresh_button(page)
+                await page.wait_for_timeout(3000)
+                continue
+            
+            # Si solve_coordinate_captcha retornó True (hizo clic), esperar un momento y verificar si hubo error o cambio
+            await page.wait_for_timeout(1500)
+            
+            # Verificar mensajes de error
+            error_incorrecto = await page.query_selector('.a-alert-content:has-text("Incorrecto"), div:has-text("Incorrecto")')
+            error_timeout = await page.query_selector('.a-alert-content:has-text("superado el límite de tiempo"), div:has-text("límite de tiempo")')
+            if error_incorrecto or error_timeout:
+                tipo = "incorrectas" if error_incorrecto else "timeout"
+                logger.warning(f"   ❌ Error detectado: coordenadas {tipo}. Refrescando canvas...")
+                await click_refresh_button(page)
+                await page.wait_for_timeout(3000)
+                continue
+            
+            # Esperar cambio de canvas o pantalla de éxito (hasta 10 segundos)
+            change = await wait_for_canvas_change(page, timeout=8)
+            if change == 'sms' or change == 'register':
+                logger.debug("   ✅ Captcha completado! Pantalla SMS/registro alcanzada.")
+                return True
+            elif change == 'login':
+                raise Exception("AMAZON_REDIRECTED_TO_LOGIN")
+            elif change == 'new_canvas':
+                logger.debug("   Nuevo canvas detectado, continuando...")
+                # No necesitamos leer progreso, simplemente seguimos el bucle
+                continue
+            else:
+                logger.warning("   No se detectó cambio ni éxito, refrescando...")
+                await click_refresh_button(page)
+                await page.wait_for_timeout(3000)
                 continue
         
-        if resolved >= needed:
-            logger.debug(f"   ✅ Captcha de coordenadas completado exitosamente después de {global_attempt} intentos.")
-            await page.wait_for_timeout(3000)
-            return True
-        else:
-            raise Exception(f"No se pudo completar el captcha después de {max_global_attempts} intentos. Progreso final: {resolved}/{needed}")
-
+        raise Exception(f"Demasiados intentos ({max_global_attempts}) sin completar el captcha de coordenadas")
     # ---------- 2. FUNCAPTCHA (ARKOSE) ----------
     title = await page.title()
 
@@ -880,153 +803,129 @@ async def click_refresh_button(page):
 
 
 # ===================================================================
-# FUNCIÓN MODIFICADA: solve_coordinate_captcha con refreshes automáticos
+# FUNCIÓN MODIFICADA: solve_coordinate_captcha con 4 peticiones y validación
 # ===================================================================
 async def solve_coordinate_captcha(page, step_name="coordinate", round_num=1):
     """
-    Resuelve una ronda de captcha de coordenadas.
-    Hasta 3 intentos con refrescos. Valida coordenadas.
-    Retorna True si se hizo clic en Confirmar (éxito o intento).
-    Lanza excepción si falla.
+    Envía 4 peticiones a AntiCaptcha (solo AntiCaptcha) en paralelo.
+    Espera hasta 40 segundos.
+    Si al menos 2 respuestas coinciden (misma cantidad de puntos y puntos similares),
+    hace clic en esas coordenadas y luego en Confirmar.
+    Si no hay coincidencia, retorna False (indicando que se debe refrescar).
+    Retorna True si se hizo clic.
     """
-    MAX_REFRESH_ATTEMPTS = 3
-    COORD_TIMEOUT = 50
+    COORD_TIMEOUT = 40  # segundos
+    NUM_REQUESTS = 4
 
-    logger.debug(f"   Resolviendo captcha de coordenadas en paso: {step_name} (ronda {round_num})")
+    logger.debug(f"   Resolviendo captcha de coordenadas con {NUM_REQUESTS} peticiones paralelas (timeout {COORD_TIMEOUT}s)")
 
-    for attempt in range(1, MAX_REFRESH_ATTEMPTS + 1):
-        logger.debug(f"   Intento de coordenadas #{attempt} (refreshes restantes: {MAX_REFRESH_ATTEMPTS - attempt})")
-
-        # Canvas o imagen
-        try:
-            canvas = await page.wait_for_selector('canvas', timeout=20000)
-            if canvas:
-                click_element = canvas
-                logger.debug("   Canvas encontrado")
-            else:
-                img = await page.wait_for_selector('img[src*="captcha"]', timeout=10000)
-                if img:
-                    click_element = img
-                    logger.debug("   Imagen encontrada")
-                else:
-                    raise Exception("No se encontró canvas ni imagen")
-        except Exception as e:
-            screenshot = await take_screenshot(page, f"{step_name}_coord_{round_num}_attempt_{attempt}_element_not_found")
-            raise Exception(f"No se encontró canvas/imagen: {e}")
-
-        # Bounding box
-        box = None
-        for _ in range(10):
-            box = await click_element.bounding_box()
-            if box and box['width'] > 0 and box['height'] > 0:
-                break
-            await page.wait_for_timeout(500)
-        if not box:
-            screenshot = await take_screenshot(page, f"{step_name}_coord_{round_num}_attempt_{attempt}_no_bbox")
-            raise Exception("No se obtuvo bounding box")
-
+    # --- Esperar canvas y obtener bounding box ---
+    try:
+        canvas = await page.wait_for_selector('canvas', timeout=20000)
+        if not canvas:
+            raise Exception("Canvas no encontrado")
         # Capturar imagen
-        if click_element == canvas:
-            screenshot_bytes = await canvas.screenshot()
-            img_path = f'temp_canvas_captcha_{round_num}_{attempt}.png'
-            with open(img_path, 'wb') as f:
-                f.write(screenshot_bytes)
+        screenshot_bytes = await canvas.screenshot()
+        img_path = f'temp_canvas_captcha_{round_num}.png'
+        with open(img_path, 'wb') as f:
+            f.write(screenshot_bytes)
+        # Bounding box
+        box = await canvas.bounding_box()
+        if not box or box['width'] == 0:
+            raise Exception("Bounding box inválida")
+    except Exception as e:
+        logger.error(f"   Error preparando canvas: {e}")
+        screenshot = await take_screenshot(page, f"{step_name}_coord_{round_num}_error")
+        raise Exception(f"Error al obtener canvas: {e}")
+
+    hint_text = "Haz clic en todas las imágenes que contengan el objeto indicado"
+
+    # Función async para enviar una petición a AntiCaptcha
+    async def fetch_coordinates():
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, solve_anticaptcha_coordinates, img_path, hint_text)
+
+    # Lanzar NUM_REQUESTS tareas en paralelo (solo AntiCaptcha, porque 2captcha tiene saldo 0)
+    tasks = [fetch_coordinates() for _ in range(NUM_REQUESTS)]
+    results = []
+    try:
+        results = await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), timeout=COORD_TIMEOUT)
+    except asyncio.TimeoutError:
+        logger.warning(f"   Timeout global de {COORD_TIMEOUT}s alcanzado, no se recibieron suficientes respuestas.")
+        return False
+
+    # Procesar resultados: filtrar None/errores y obtener listas de coordenadas válidas
+    valid_responses = []
+    for res in results:
+        if isinstance(res, Exception):
+            logger.debug(f"   Petición falló: {res}")
+            continue
+        if res and isinstance(res, list) and len(res) >= 2:
+            valid_responses.append(res)
         else:
-            img_src = await img.get_attribute('src')
-            if not img_src:
-                raise Exception("Imagen sin src")
-            img_data = requests.get(img_src, timeout=10).content
-            img_path = f'temp_image_captcha_{round_num}_{attempt}.jpg'
-            with open(img_path, 'wb') as f:
-                f.write(img_data)
+            logger.debug(f"   Respuesta inválida o vacía: {res}")
 
-        await take_screenshot(page, f"{step_name}_coord_{round_num}_attempt_{attempt}_before_solve")
-        hint_text = "Haz clic en todas las imágenes que contengan el objeto indicado"
+    if len(valid_responses) < 2:
+        logger.warning(f"   Solo {len(valid_responses)} respuestas válidas de {NUM_REQUESTS}, no hay suficiente coincidencia.")
+        return False
 
-        # Lanzar servicios en paralelo
-        async def solve_2captcha_async():
-            loop = asyncio.get_event_loop()
-            return await loop.run_in_executor(None, solve_2captcha_coordinates, img_path, hint_text)
+    # Función para comparar si dos sets de coordenadas son similares (mismo número de puntos y puntos cercanos)
+    def similar_coords(a, b, tolerance=15):
+        if len(a) != len(b):
+            return False
+        # Comparar cada punto de a con algún punto de b (sin importar orden)
+        matched = [False] * len(b)
+        for pa in a:
+            best_dist = None
+            best_idx = -1
+            for i, pb in enumerate(b):
+                if matched[i]:
+                    continue
+                dist = abs(pa['x'] - pb['x']) + abs(pa['y'] - pb['y'])
+                if best_dist is None or dist < best_dist:
+                    best_dist = dist
+                    best_idx = i
+            if best_dist is None or best_dist > tolerance:
+                return False
+            matched[best_idx] = True
+        return True
 
-        async def solve_anticaptcha_async():
-            loop = asyncio.get_event_loop()
-            return await loop.run_in_executor(None, solve_anticaptcha_coordinates, img_path, hint_text)
+    # Buscar la respuesta más repetida (por similitud)
+    best_coords = None
+    best_count = 0
+    for i in range(len(valid_responses)):
+        count = 1
+        for j in range(i+1, len(valid_responses)):
+            if similar_coords(valid_responses[i], valid_responses[j], tolerance=20):
+                count += 1
+        if count > best_count:
+            best_count = count
+            best_coords = valid_responses[i]
 
-        tasks = []
-        if API_KEY_2CAPTCHA:
-            tasks.append(solve_2captcha_async())
-        if API_KEY_ANTICAPTCHA:
-            tasks.append(solve_anticaptcha_async())
-        if not tasks:
-            raise Exception("No hay servicios de captcha configurados")
+    if best_count < 2:
+        logger.warning(f"   No hay suficiente coincidencia entre las respuestas (máximo {best_count} coincidencias).")
+        return False
 
-        coordinates = None
-        errors = []
-        try:
-            results = await asyncio.wait_for(
-                asyncio.gather(*tasks, return_exceptions=True),
-                timeout=COORD_TIMEOUT
-            )
-        except asyncio.TimeoutError:
-            logger.warning(f"   ⏰ Timeout de {COORD_TIMEOUT}s alcanzado (intento {attempt})")
-            coordinates = None
-        else:
-            for res in results:
-                if isinstance(res, Exception):
-                    errors.append(str(res))
-                    logger.warning(f"   Servicio falló: {res}")
-                elif res:
-                    coordinates = res
-                    break
+    logger.debug(f"   ✅ Coordenadas válidas (coincidencia de {best_count} respuestas): {best_coords}")
 
-        # Validar coordenadas
-        if coordinates:
-            valid = []
-            for p in coordinates:
-                x = int(p['x'])
-                y = int(p['y'])
-                if 0 <= x <= box['width'] and 0 <= y <= box['height']:
-                    valid.append({'x': x, 'y': y})
-                else:
-                    logger.warning(f"   Punto fuera de rango: ({x},{y}) ignorado")
-            if len(valid) < 2:
-                logger.warning(f"   Solo {len(valid)} puntos válidos (se requieren al menos 2). Reintentando mismo canvas...")
-                continue  # no refrescar, solo repetir con el mismo canvas
-            coordinates = valid
-            logger.debug(f"   ✅ Coordenadas válidas: {coordinates}")
+    # Hacer clic en las coordenadas (dentro del canvas)
+    for point in best_coords:
+        abs_x = box['x'] + point['x']
+        abs_y = box['y'] + point['y']
+        await page.mouse.click(abs_x, abs_y)
+        await asyncio.sleep(0.2)
 
-            # Clics
-            for point in coordinates:
-                abs_x = box['x'] + point['x']
-                abs_y = box['y'] + point['y']
-                await page.mouse.click(abs_x, abs_y)
-                await asyncio.sleep(0.2)
-
-            # Botón confirmar
-            confirm_btn = await page.query_selector('button:has-text("Confirmar"), input[value="Confirmar"], button[type="submit"]')
-            if confirm_btn:
-                await confirm_btn.click()
-                logger.debug(f"   Botón de confirmar clickeado (intento {attempt})")
-                await page.wait_for_load_state('domcontentloaded', timeout=10000)
-                await page.wait_for_timeout(1500)
-                return True
-            else:
-                logger.warning("   No se encontró botón de confirmar, asumiendo éxito")
-                return True
-        else:
-            logger.warning(f"   No se recibieron coordenadas (intento {attempt})")
-            if attempt < MAX_REFRESH_ATTEMPTS:
-                logger.debug("   🔄 Refrescando canvas...")
-                await click_refresh_button(page)
-                await page.wait_for_timeout(3000)
-            else:
-                screenshot = await take_screenshot(page, f"{step_name}_coord_{round_num}_no_solution")
-                raise Exception(f"CAPTCHA_NO_SOLUTION after {MAX_REFRESH_ATTEMPTS} attempts")
-
-    raise Exception("CAPTCHA_FAILED_UNEXPECTED")
-
-
-
+    # Buscar botón de confirmar y hacer clic
+    confirm_btn = await page.query_selector('button:has-text("Confirmar"), input[value="Confirmar"], button[type="submit"]')
+    if confirm_btn:
+        await confirm_btn.click()
+        logger.debug(f"   Botón de confirmar clickeado")
+        await page.wait_for_load_state('domcontentloaded', timeout=10000)
+        await page.wait_for_timeout(1500)
+        return True
+    else:
+        logger.warning("   No se encontró botón de confirmar, asumiendo éxito")
+        return True
 
 
 
