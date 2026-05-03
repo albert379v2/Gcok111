@@ -808,13 +808,13 @@ async def click_refresh_button(page):
 async def solve_coordinate_captcha(page, step_name="coordinate", round_num=1):
     """
     Envía 4 peticiones a AntiCaptcha (solo AntiCaptcha) en paralelo.
-    Espera hasta 40 segundos.
+    Espera hasta 51 segundos.
     Si al menos 2 respuestas coinciden (misma cantidad de puntos y puntos similares),
     hace clic en esas coordenadas y luego en Confirmar.
     Si no hay coincidencia, retorna False (indicando que se debe refrescar).
     Retorna True si se hizo clic.
     """
-    COORD_TIMEOUT = 40  # segundos
+    COORD_TIMEOUT = 51  # segundos
     NUM_REQUESTS = 4
 
     logger.debug(f"   Resolviendo captcha de coordenadas con {NUM_REQUESTS} peticiones paralelas (timeout {COORD_TIMEOUT}s)")
