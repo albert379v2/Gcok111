@@ -191,8 +191,6 @@ def get_best_session():
     return session_id
 
 
-
-
 def is_service_enabled():
     """Consulta el estado del interruptor en CheckerCT."""
     try:
@@ -896,32 +894,62 @@ async def solve_coordinate_captcha(page, step_name="coordinate", round_num=1):
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(None, solve_anticaptcha_coordinates, img_path, hint_text)
 
-    # Lanzar NUM_REQUESTS tareas en paralelo (solo AntiCaptcha, porque 2captcha tiene saldo 0)
-    tasks = [fetch_coordinates() for _ in range(NUM_REQUESTS)]
-    results = []
-    try:
-        results = await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), timeout=COORD_TIMEOUT)
-    except asyncio.TimeoutError:
-        logger.warning(f"   Timeout global de {COORD_TIMEOUT}s alcanzado, no se recibieron suficientes respuestas.")
-        return False
 
-    # Procesar resultados: filtrar None/errores y obtener listas de coordenadas válidas
-    valid_responses = []
-    for res in results:
-        if isinstance(res, Exception):
-            logger.debug(f"   Petición falló: {res}")
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    # Lanzar NUM_REQUESTS tareas en paralelo
+    tasks = [asyncio.create_task(fetch_coordinates()) for _ in range(NUM_REQUESTS)]
+    results = []
+    # Esperar hasta COORD_TIMEOUT segundos, pero sin cancelar las tareas,
+    # recolectando las que ya han terminado.
+    done, pending = await asyncio.wait(tasks, timeout=COORD_TIMEOUT, return_when=asyncio.ALL_COMPLETED)
+    
+    # Procesar las tareas completadas (done)
+    for task in done:
+        try:
+            res = task.result()
+        except Exception as e:
+            logger.debug(f"   Tarea falló: {e}")
             continue
         if res and isinstance(res, list) and len(res) >= 2:
-            valid_responses.append(res)
+            results.append(res)
         else:
             logger.debug(f"   Respuesta inválida o vacía: {res}")
-
-    if len(valid_responses) < 2:
-        logger.warning(f"   Solo {len(valid_responses)} respuestas válidas de {NUM_REQUESTS}, no hay suficiente coincidencia.")
+    
+    # Cancelar las tareas que aún estén pendientes (opcional, para liberar recursos)
+    for task in pending:
+        task.cancel()
+    
+    if len(results) < 2:
+        logger.warning(f"   Solo {len(results)} respuestas válidas de {NUM_REQUESTS}, no hay suficiente coincidencia.")
         return False
+    
+
+
+
+
+
+
+
+
+
 
     # Función para comparar si dos sets de coordenadas son similares (mismo número de puntos y puntos cercanos)
-    def similar_coords(a, b, tolerance=15):
+    def similar_coords(a, b, tolerance=30):
         if len(a) != len(b):
             return False
         # Comparar cada punto de a con algún punto de b (sin importar orden)
@@ -932,7 +960,8 @@ async def solve_coordinate_captcha(page, step_name="coordinate", round_num=1):
             for i, pb in enumerate(b):
                 if matched[i]:
                     continue
-                dist = abs(pa['x'] - pb['x']) + abs(pa['y'] - pb['y'])
+                # Distancia Chebyshev: max(|x1-x2|, |y1-y2|)
+                dist = max(abs(pa['x'] - pb['x']), abs(pa['y'] - pb['y']))
                 if best_dist is None or dist < best_dist:
                     best_dist = dist
                     best_idx = i
@@ -947,7 +976,7 @@ async def solve_coordinate_captcha(page, step_name="coordinate", round_num=1):
     for i in range(len(valid_responses)):
         count = 1
         for j in range(i+1, len(valid_responses)):
-            if similar_coords(valid_responses[i], valid_responses[j], tolerance=20):
+            if similar_coords(valid_responses[i], valid_responses[j], tolerance=30):
                 count += 1
         if count > best_count:
             best_count = count
@@ -972,7 +1001,7 @@ async def solve_coordinate_captcha(page, step_name="coordinate", round_num=1):
         await confirm_btn.click()
         logger.debug(f"   Botón de confirmar clickeado")
         await page.wait_for_load_state('domcontentloaded', timeout=10000)
-        await page.wait_for_timeout(3000)
+        await page.wait_for_timeout(1500)
         return True
     else:
         logger.warning("   No se encontró botón de confirmar, asumiendo éxito")
@@ -1587,84 +1616,60 @@ async def get_captcha_progress(page):
     logger.debug("📊 No se pudo leer el progreso, se asume 0/3")
     return 0, 3
 
-async def wait_for_canvas_change(page, previous_canvas_id=None, timeout=10):
+async def wait_for_canvas_change(page, previous_canvas_id=None, timeout=5):
     """
-    Espera a que el canvas cambie después de una acción (clic en Confirmar).
-    Estrategia: esperar a que el canvas desaparezca (o cambie su ID) y luego aparezca uno nuevo.
+    Espera a que el canvas cambie o aparezca éxito/error.
     Retorna:
-      'new_canvas' - si detecta un canvas diferente
-      'sms' - si aparece campo de código
-      'register' - si aparece formulario de registro
-      'login' - si redirige a login
-      None - si timeout
+      'new_canvas' - canvas diferente
+      'sms' - campo de código
+      'register' - formulario de registro
+      'login' - página de login
+      'error' - mensaje "Incorrecto..."
+      None - timeout
     """
     start = time.time()
-    
-    # --- 1. Esperar a que el canvas actual desaparezca o cambie de posición ---
-    # Guardamos el bounding box del canvas anterior (si existe)
-    old_box = None
-    if previous_canvas_id:
-        # Intentar obtener bounding box del canvas anterior a partir del ID (si se guardó)
-        # En nuestro caso, previous_canvas_id es el ID calculado (data-challenge-id o bounding)
-        pass
-    
-    # Variable para saber si el canvas ya cambió
-    canvas_disappeared = False
-    first_sight = None
-    
-    while time.time() - start < timeout:
-        # 1. Detectar mensajes de éxito (SMS, registro)
-        if await page.query_selector('#cvf-input-code, #cvf-input-otp, input[name="otpCode"]'):
-            logger.debug("   📱 Campo SMS detectado, captcha completado.")
-            return 'sms'
-        if await page.query_selector('#ap_customer_name'):
-            logger.debug("   📝 Formulario de registro detectado.")
-            return 'register'
-        if await page.query_selector('#ap_email'):
-            logger.warning("   🚫 Redirigido a login.")
-            return 'login'
-        
-        # 2. Detectar el canvas actual
+    if previous_canvas_id is None:
         canvas = await page.query_selector('canvas')
         if canvas:
-            # Obtener identificador del canvas (data-challenge-id o bounding box)
+            previous_canvas_id = await canvas.get_attribute('data-challenge-id')
+            if not previous_canvas_id:
+                box = await canvas.bounding_box()
+                previous_canvas_id = f"{box['x']}_{box['y']}_{box['width']}_{box['height']}" if box else None
+                logger.debug(f"   ID canvas inicial (bounding): {previous_canvas_id}")
+
+    while time.time() - start < timeout:
+        # 1. Error
+        error_elem = await page.query_selector('.a-alert-content:has-text("Incorrecto"), div:has-text("Incorrecto. Vuelva a intentarlo.")')
+        if error_elem:
+            logger.debug("   ❌ Mensaje de error detectado")
+            return 'error'
+
+        # 2. SMS
+        if await page.query_selector('#cvf-input-code, #cvf-input-otp, input[name="otpCode"]'):
+            logger.debug("   📱 Campo SMS detectado")
+            return 'sms'
+        # 3. Registro
+        if await page.query_selector('#ap_customer_name'):
+            logger.debug("   📝 Formulario de registro detectado")
+            return 'register'
+        # 4. Login
+        if await page.query_selector('#ap_email'):
+            logger.warning("   🚫 Redirigido a login")
+            return 'login'
+        # 5. Cambio de canvas
+        canvas = await page.query_selector('canvas')
+        if canvas:
             current_id = await canvas.get_attribute('data-challenge-id')
             if not current_id:
                 box = await canvas.bounding_box()
                 current_id = f"{box['x']}_{box['y']}_{box['width']}_{box['height']}" if box else None
-            
-            # Si tenemos un ID anterior y el actual es diferente, es un nuevo canvas
             if previous_canvas_id and current_id and current_id != previous_canvas_id:
-                logger.debug(f"   🎨 Nuevo canvas detectado (ID cambiado: {previous_canvas_id[:30]} → {current_id[:30]})")
+                logger.debug(f"   🎨 Nuevo canvas detectado (ID antiguo: {previous_canvas_id[:30]}... nuevo: {current_id[:30]}...)")
                 return 'new_canvas'
-            
-            # Si no tenemos ID anterior, pero este canvas tiene diferentes dimensiones o posición
-            if previous_canvas_id is None and canvas:
-                # Asumimos que es el primer canvas, guardamos su ID y seguimos
-                previous_canvas_id = current_id
-        else:
-            # No hay canvas visible: puede estar desapareciendo para cambiar
-            if not canvas_disappeared:
-                logger.debug("   Canvas desapareció, esperando que aparezca uno nuevo...")
-                canvas_disappeared = True
-            # Esperar un poco más
-            await page.wait_for_timeout(500)
-            continue
-        
-        # Si ya desapareció y ahora vuelve a aparecer con otro ID
-        if canvas_disappeared and canvas:
-            new_id = await canvas.get_attribute('data-challenge-id')
-            if not new_id:
-                box = await canvas.bounding_box()
-                new_id = f"{box['x']}_{box['y']}_{box['width']}_{box['height']}" if box else None
-            if new_id and new_id != previous_canvas_id:
-                logger.debug(f"   🎨 Nuevo canvas detectado después de desaparición (ID: {new_id[:30]})")
-                return 'new_canvas'
-        
         await page.wait_for_timeout(500)
-    
-    logger.debug("   ⏱️ Timeout esperando cambio de canvas")
+    logger.debug("   ⏱️ Timeout esperando cambio")
     return None
+
 # --------------------------------------------------------------------
 # FUNCIÓN AUXILIAR PARA CAPTURAR PANTALLA (optimizada)
 # -------------------------------------------------------------------
