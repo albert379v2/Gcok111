@@ -856,69 +856,46 @@ async def click_refresh_button(page):
 # ===================================================================
 async def solve_coordinate_captcha(page, step_name="coordinate", round_num=1):
     """
-    Envía 4 peticiones a AntiCaptcha (solo AntiCaptcha) en paralelo.
-    Espera hasta 51 segundos.
-    Si al menos 2 respuestas coinciden (misma cantidad de puntos y puntos similares),
+    Envía 4 peticiones a AntiCaptcha en paralelo.
+    Espera hasta 51 segundos, pero recolecta las respuestas que van llegando.
+    Si al menos 2 respuestas coinciden (mismo número de puntos y cada punto a menos de 30px en X e Y),
     hace clic en esas coordenadas y luego en Confirmar.
-    Si no hay coincidencia, retorna False (indicando que se debe refrescar).
-    Retorna True si se hizo clic.
+    Retorna True si se hizo clic, False si no hay consenso.
     """
-    COORD_TIMEOUT = 51  # segundos
+    COORD_TIMEOUT = 51
     NUM_REQUESTS = 4
+    TOLERANCIA = 30   # píxeles (Chebyshev)
 
-    logger.debug(f"   Resolviendo captcha de coordenadas con {NUM_REQUESTS} peticiones paralelas (timeout {COORD_TIMEOUT}s)")
+    logger.debug(f"   Resolviendo captcha con {NUM_REQUESTS} peticiones paralelas (timeout {COORD_TIMEOUT}s)")
 
-    # --- Esperar canvas y obtener bounding box ---
+    # --- Obtener canvas y bounding box ---
     try:
         canvas = await page.wait_for_selector('canvas', timeout=20000)
         if not canvas:
             raise Exception("Canvas no encontrado")
-        # Capturar imagen
         screenshot_bytes = await canvas.screenshot()
         img_path = f'temp_canvas_captcha_{round_num}.png'
         with open(img_path, 'wb') as f:
             f.write(screenshot_bytes)
-        # Bounding box
         box = await canvas.bounding_box()
         if not box or box['width'] == 0:
             raise Exception("Bounding box inválida")
     except Exception as e:
         logger.error(f"   Error preparando canvas: {e}")
-        screenshot = await take_screenshot(page, f"{step_name}_coord_{round_num}_error")
+        await take_screenshot(page, f"{step_name}_coord_{round_num}_error")
         raise Exception(f"Error al obtener canvas: {e}")
 
     hint_text = "Haz clic en todas las imágenes que contengan el objeto indicado"
 
-    # Función async para enviar una petición a AntiCaptcha
     async def fetch_coordinates():
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(None, solve_anticaptcha_coordinates, img_path, hint_text)
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-    # Lanzar NUM_REQUESTS tareas en paralelo
+    # Lanzar tareas
     tasks = [asyncio.create_task(fetch_coordinates()) for _ in range(NUM_REQUESTS)]
-    results = []
-    # Esperar hasta COORD_TIMEOUT segundos, pero sin cancelar las tareas,
-    # recolectando las que ya han terminado.
     done, pending = await asyncio.wait(tasks, timeout=COORD_TIMEOUT, return_when=asyncio.ALL_COMPLETED)
-    
-    # Procesar las tareas completadas (done)
+
+    valid_responses = []   # <--- ¡Aquí estaba el error! Ahora lo definimos
     for task in done:
         try:
             res = task.result()
@@ -926,33 +903,21 @@ async def solve_coordinate_captcha(page, step_name="coordinate", round_num=1):
             logger.debug(f"   Tarea falló: {e}")
             continue
         if res and isinstance(res, list) and len(res) >= 2:
-            results.append(res)
+            valid_responses.append(res)
         else:
-            logger.debug(f"   Respuesta inválida o vacía: {res}")
-    
-    # Cancelar las tareas que aún estén pendientes (opcional, para liberar recursos)
+            logger.debug(f"   Respuesta inválida: {res}")
+
     for task in pending:
         task.cancel()
-    
-    if len(results) < 2:
-        logger.warning(f"   Solo {len(results)} respuestas válidas de {NUM_REQUESTS}, no hay suficiente coincidencia.")
+
+    if len(valid_responses) < 2:
+        logger.warning(f"   Solo {len(valid_responses)} respuestas válidas de {NUM_REQUESTS}, no hay suficientes para consenso.")
         return False
-    
 
-
-
-
-
-
-
-
-
-
-    # Función para comparar si dos sets de coordenadas son similares (mismo número de puntos y puntos cercanos)
-    def similar_coords(a, b, tolerance=30):
+    # Función de comparación con mismo número de puntos y tolerancia Chebyshev
+    def similar_coords(a, b, tolerance=TOLERANCIA):
         if len(a) != len(b):
             return False
-        # Comparar cada punto de a con algún punto de b (sin importar orden)
         matched = [False] * len(b)
         for pa in a:
             best_dist = None
@@ -960,7 +925,6 @@ async def solve_coordinate_captcha(page, step_name="coordinate", round_num=1):
             for i, pb in enumerate(b):
                 if matched[i]:
                     continue
-                # Distancia Chebyshev: max(|x1-x2|, |y1-y2|)
                 dist = max(abs(pa['x'] - pb['x']), abs(pa['y'] - pb['y']))
                 if best_dist is None or dist < best_dist:
                     best_dist = dist
@@ -976,40 +940,36 @@ async def solve_coordinate_captcha(page, step_name="coordinate", round_num=1):
     for i in range(len(valid_responses)):
         count = 1
         for j in range(i+1, len(valid_responses)):
-            if similar_coords(valid_responses[i], valid_responses[j], tolerance=30):
+            if similar_coords(valid_responses[i], valid_responses[j]):
                 count += 1
         if count > best_count:
             best_count = count
             best_coords = valid_responses[i]
 
     if best_count < 2:
-        logger.warning(f"   No hay suficiente coincidencia entre las respuestas (máximo {best_count} coincidencias).")
+        logger.warning(f"   No hay suficiente coincidencia (máximo {best_count} respuestas).")
         return False
 
-    logger.debug(f"   ✅ Coordenadas válidas (coincidencia de {best_count} respuestas): {best_coords}")
+    logger.debug(f"   ✅ Coincidencia de {best_count} respuestas. Coordenadas: {best_coords}")
 
-    # Hacer clic en las coordenadas (dentro del canvas)
+    # Hacer clic
     for point in best_coords:
         abs_x = box['x'] + point['x']
         abs_y = box['y'] + point['y']
         await page.mouse.click(abs_x, abs_y)
         await asyncio.sleep(0.2)
 
-    # Buscar botón de confirmar y hacer clic
+    # Clic en botón Confirmar
     confirm_btn = await page.query_selector('button:has-text("Confirmar"), input[value="Confirmar"], button[type="submit"]')
     if confirm_btn:
         await confirm_btn.click()
-        logger.debug(f"   Botón de confirmar clickeado")
+        logger.debug("   Botón Confirmar clickeado")
         await page.wait_for_load_state('domcontentloaded', timeout=10000)
-        await page.wait_for_timeout(1500)
+        await page.wait_for_timeout(3000)
         return True
     else:
-        logger.warning("   No se encontró botón de confirmar, asumiendo éxito")
+        logger.warning("   No se encontró botón Confirmar, se asume éxito")
         return True
-
-
-
-
 
 
 
