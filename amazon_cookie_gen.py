@@ -676,9 +676,8 @@ async def handle_captcha_if_present(page, step_name="captcha"):
             error_timeout = await page.query_selector('.a-alert-content:has-text("superado el límite de tiempo"), div:has-text("límite de tiempo")')
             if error_incorrecto or error_timeout:
                 tipo = "incorrectas" if error_incorrecto else "timeout"
-                logger.warning(f"   ❌ Error detectado: coordenadas {tipo}. Refrescando canvas...")
-                await click_refresh_button(page)
-                await page.wait_for_timeout(3000)
+                logger.warning(f"   ❌ Error detectado: coordenadas {tipo}, esperando 6seg al nuevo canvas...")
+                await page.wait_for_timeout(6000)
                 continue
             
             # Esperar cambio de canvas o pantalla de éxito (hasta 10 segundos)
@@ -693,9 +692,8 @@ async def handle_captcha_if_present(page, step_name="captcha"):
                 # No necesitamos leer progreso, simplemente seguimos el bucle
                 continue
             else:
-                logger.warning("   No se detectó cambio ni éxito, refrescando...")
-                await click_refresh_button(page)
-                await page.wait_for_timeout(3000)
+                logger.warning("   No se detectó cambio ni éxito, probando próximo canvas...")
+                await page.wait_for_timeout(5000)
                 continue
         
         raise Exception(f"Demasiados intentos ({max_global_attempts}) sin completar el captcha de coordenadas")
