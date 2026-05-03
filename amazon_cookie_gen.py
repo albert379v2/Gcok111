@@ -855,16 +855,15 @@ async def click_refresh_button(page):
 async def solve_coordinate_captcha(page, step_name="coordinate", round_num=1):
     """
     Envía 4 peticiones a AntiCaptcha en paralelo.
-    Espera hasta 51 segundos, pero recolecta las respuestas que van llegando.
-    Si al menos 2 respuestas coinciden (mismo número de puntos y cada punto a menos de 30px en X e Y),
-    hace clic en esas coordenadas y luego en Confirmar.
-    Retorna True si se hizo clic, False si no hay consenso.
+    La primera respuesta que contenga EXACTAMENTE 5 puntos se considera válida.
+    Si después de 40 segundos no llega ninguna respuesta con 5 puntos, retorna False.
+    Si llega, hace clic en los 5 puntos y en Confirmar, y retorna True.
     """
-    COORD_TIMEOUT = 51
+    COORD_TIMEOUT = 40  # segundos
     NUM_REQUESTS = 4
-    TOLERANCIA = 80   # píxeles (Chebyshev)
+    EXPECTED_POINTS = 5
 
-    logger.debug(f"   Resolviendo captcha con {NUM_REQUESTS} peticiones paralelas (timeout {COORD_TIMEOUT}s)")
+    logger.debug(f"   Resolviendo captcha: buscando {EXPECTED_POINTS} puntos (4 peticiones, timeout {COORD_TIMEOUT}s)")
 
     # --- Obtener canvas y bounding box ---
     try:
@@ -881,7 +880,7 @@ async def solve_coordinate_captcha(page, step_name="coordinate", round_num=1):
     except Exception as e:
         logger.error(f"   Error preparando canvas: {e}")
         await take_screenshot(page, f"{step_name}_coord_{round_num}_error")
-        raise Exception(f"Error al obtener canvas: {e}")
+        return False
 
     hint_text = "Haz clic en todas las imágenes que contengan el objeto indicado"
 
@@ -891,66 +890,36 @@ async def solve_coordinate_captcha(page, step_name="coordinate", round_num=1):
 
     # Lanzar tareas
     tasks = [asyncio.create_task(fetch_coordinates()) for _ in range(NUM_REQUESTS)]
-    done, pending = await asyncio.wait(tasks, timeout=COORD_TIMEOUT, return_when=asyncio.ALL_COMPLETED)
+    # Esperar hasta COORD_TIMEOUT, pero recolectar respuestas a medida que llegan
+    start_time = time.time()
+    best_coords = None
+    while time.time() - start_time < COORD_TIMEOUT:
+        # Verificar tareas completadas
+        for task in tasks[:]:  # copia para iterar
+            if task.done():
+                tasks.remove(task)
+                try:
+                    res = task.result()
+                except Exception as e:
+                    logger.debug(f"   Tarea falló: {e}")
+                    continue
+                if res and isinstance(res, list) and len(res) == EXPECTED_POINTS:
+                    logger.debug(f"   ✅ Respuesta con {EXPECTED_POINTS} puntos recibida: {res}")
+                    best_coords = res
+                    break
+        if best_coords:
+            break
+        await asyncio.sleep(0.5)
 
-    valid_responses = []   # <--- ¡Aquí estaba el error! Ahora lo definimos
-    for task in done:
-        try:
-            res = task.result()
-        except Exception as e:
-            logger.debug(f"   Tarea falló: {e}")
-            continue
-        if res and isinstance(res, list) and len(res) >= 2:
-            valid_responses.append(res)
-        else:
-            logger.debug(f"   Respuesta inválida: {res}")
-
-    for task in pending:
+    # Cancelar tareas pendientes
+    for task in tasks:
         task.cancel()
 
-    if len(valid_responses) < 2:
-        logger.warning(f"   Solo {len(valid_responses)} respuestas válidas de {NUM_REQUESTS}, no hay suficientes para consenso.")
+    if not best_coords:
+        logger.warning(f"   No se recibió ninguna respuesta con {EXPECTED_POINTS} puntos en {COORD_TIMEOUT}s.")
         return False
 
-    # Función de comparación con mismo número de puntos y tolerancia Chebyshev
-    def similar_coords(a, b, tolerance=TOLERANCIA):
-        if len(a) != len(b):
-            return False
-        matched = [False] * len(b)
-        for pa in a:
-            best_dist = None
-            best_idx = -1
-            for i, pb in enumerate(b):
-                if matched[i]:
-                    continue
-                dist = max(abs(pa['x'] - pb['x']), abs(pa['y'] - pb['y']))
-                if best_dist is None or dist < best_dist:
-                    best_dist = dist
-                    best_idx = i
-            if best_dist is None or best_dist > tolerance:
-                return False
-            matched[best_idx] = True
-        return True
-
-    # Buscar la respuesta más repetida (por similitud)
-    best_coords = None
-    best_count = 0
-    for i in range(len(valid_responses)):
-        count = 1
-        for j in range(i+1, len(valid_responses)):
-            if similar_coords(valid_responses[i], valid_responses[j]):
-                count += 1
-        if count > best_count:
-            best_count = count
-            best_coords = valid_responses[i]
-
-    if best_count < 2:
-        logger.warning(f"   No hay suficiente coincidencia (máximo {best_count} respuestas).")
-        return False
-
-    logger.debug(f"   ✅ Coincidencia de {best_count} respuestas. Coordenadas: {best_coords}")
-
-    # Hacer clic
+    # Hacer clic en los puntos
     for point in best_coords:
         abs_x = box['x'] + point['x']
         abs_y = box['y'] + point['y']
@@ -966,16 +935,8 @@ async def solve_coordinate_captcha(page, step_name="coordinate", round_num=1):
         await page.wait_for_timeout(3000)
         return True
     else:
-        logger.warning("   No se encontró botón Confirmar, se asume éxito")
+        logger.warning("   No se encontró botón Confirmar, asumiendo éxito")
         return True
-
-
-
-
-
-
-
-
 
 
 
