@@ -671,14 +671,15 @@ async def handle_captcha_if_present(page, step_name="captcha"):
             # Si solve_coordinate_captcha retornó True (hizo clic), esperar un momento y verificar si hubo error o cambio
             await page.wait_for_timeout(1500)
             
-            # Verificar mensajes de error
             error_incorrecto = await page.query_selector('.a-alert-content:has-text("Incorrecto"), div:has-text("Incorrecto")')
             error_timeout = await page.query_selector('.a-alert-content:has-text("superado el límite de tiempo"), div:has-text("límite de tiempo")')
             if error_incorrecto or error_timeout:
                 tipo = "incorrectas" if error_incorrecto else "timeout"
-                logger.warning(f"   ❌ Error detectado: coordenadas {tipo}, esperando 6seg al nuevo canvas...")
-                await page.wait_for_timeout(6000)
-                continue
+                logger.warning(f"   ❌ Error detectado: coordenadas {tipo}. Tomando captura y finalizando intento global para debug.")
+                # Tomar captura de pantalla
+                await take_screenshot(page, f"error_coordenadas_{tipo}")
+                # Lanzar excepción para que el intento global falle (y se vea la captura en la respuesta)
+                raise Exception(f"CAPTCHA_ERROR: coordenadas {tipo}")
             
             # Esperar cambio de canvas o pantalla de éxito (hasta 10 segundos)
             change = await wait_for_canvas_change(page, timeout=8)
@@ -692,8 +693,8 @@ async def handle_captcha_if_present(page, step_name="captcha"):
                 # No necesitamos leer progreso, simplemente seguimos el bucle
                 continue
             else:
-                logger.warning("   No se detectó cambio ni éxito, probando próximo canvas...")
-                await page.wait_for_timeout(5000)
+                logger.warning("   No se detectó cambio ni éxito, esperando 6seg y probando próximo canvas...")
+                await page.wait_for_timeout(6000)
                 continue
         
         raise Exception(f"Demasiados intentos ({max_global_attempts}) sin completar el captcha de coordenadas")
@@ -868,7 +869,7 @@ async def solve_coordinate_captcha(page, step_name="coordinate", round_num=1):
     """
     # ========== CONFIGURACIÓN ==========
     NUM_REQUESTS = 8          # número de peticiones paralelas
-    MIN_MATCHES = 3           # coincidencias requeridas
+    MIN_MATCHES = 2           # coincidencias requeridas
     TIMEOUT = 50              # segundos máximo total
     # ==================================
 
