@@ -670,6 +670,11 @@ async def handle_captcha_if_present(page, step_name="captcha"):
             
             # Si solve_coordinate_captcha retornó True (hizo clic), esperar un momento y verificar si hubo error o cambio
             await page.wait_for_timeout(1500)
+
+            if await page.query_selector('#ap_email'):
+                logger.warning("   🚫 Redirección a login detectada después de resolver captcha. Reintentando internamente...")
+                await take_screenshot(page, "redirigido_a_login_despues_captcha")
+                raise Exception("AMAZON_REDIRECTED_TO_LOGIN")
             
             error_incorrecto = await page.query_selector('.a-alert-content:has-text("Incorrecto"), div:has-text("Incorrecto")')
             error_timeout = await page.query_selector('.a-alert-content:has-text("superado el límite de tiempo"), div:has-text("límite de tiempo")')
