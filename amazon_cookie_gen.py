@@ -2800,12 +2800,12 @@ async def generate_cookie_api(country, add_address=True, max_retries=None, max_i
 # API FLASK
 # -------------------------------------------------------------------
 app = Flask(__name__)
-CORS(app, origins=['https://ciberterroristaschk.shop'], methods=["GET", "POST", "OPTIONS"],
+CORS(app, origins=['https://astralchk.com'], methods=["GET", "POST", "OPTIONS"],
      allow_headers=["Content-Type", "Authorization"], supports_credentials=True)
 
 @app.after_request
 def after_request(response):
-    response.headers.add('Access-Control-Allow-Origin', 'https://ciberterroristaschk.shop')
+    response.headers.add('Access-Control-Allow-Origin', 'https://astralchk.com')
     response.headers.add('Access-Control-Allow-Headers', 'Content-Type,Authorization')
     response.headers.add('Access-Control-Allow-Methods', 'GET,POST,OPTIONS')
     response.headers.add('Access-Control-Allow-Credentials', 'true')
