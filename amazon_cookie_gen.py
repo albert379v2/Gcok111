@@ -192,19 +192,8 @@ def get_best_session():
 
 
 def is_service_enabled():
-    """Consulta el estado del interruptor en CheckerCT."""
-    try:
-        headers = {'x-api-key': SERVICE_API_KEY}
-        response = requests.get(f"{API_BASE_URL}/admin/service-status-for-generator", headers=headers, timeout=5)
-        if response.status_code == 200:
-            data = response.json()
-            return data.get('enabled', True)
-        else:
-            logger.warning(f"No se pudo obtener estado: {response.status_code}")
-            return True  # Por defecto activo si falla
-    except Exception as e:
-        logger.warning(f"Error consultando estado: {e}")
-        return True
+    """Sin checker externo - siempre activo."""
+    return True
     
 def test_proxy(session, max_retries=3):
     """Prueba la conectividad del proxy y retorna la IP pública, con reintentos."""
@@ -242,42 +231,12 @@ def get_str(string, start, end, occurrence=1):
 import requests
 
 def check_user_credits(token, required=3):
-    """Verifica que el usuario tenga al menos 'required' créditos y devuelve su rol."""
-    db_api_url = f"{API_BASE_URL}/user/credits"
-    headers = {'Authorization': f'Bearer {token}'}
-    try:
-        response = requests.get(db_api_url, headers=headers, timeout=10)
-        if response.status_code == 200:
-            data = response.json()
-            credits = data.get('credits', 0)
-            role = data.get('role', 'user')
-            if credits >= required:
-                return True, credits, role
-            else:
-                return False, f"Créditos insuficientes. Tienes {credits}, se requieren {required}.", role
-        else:
-            return False, f"Error al verificar créditos: {response.status_code}", None
-    except Exception as e:
-        return False, f"Error de conexión: {str(e)}", None
+    """Sin sistema de créditos - siempre permite."""
+    return True, 999, 'admin'  # success, credits, role
 
 def deduct_credits(token, amount=3):
-    """Llama a la API de base de datos para descontar créditos del usuario autenticado."""
-    db_api_url = f"{API_BASE_URL}/user/use-credits"
-    headers = {
-        'Authorization': f'Bearer {token}',
-        'Content-Type': 'application/json'
-    }
-    try:
-        response = requests.post(db_api_url, json={'amount': amount}, headers=headers, timeout=10)
-        if response.status_code == 200:
-            data = response.json()
-            return data.get('success', False), data.get('newCredits')
-        else:
-            logger.error(f"Error al descontar créditos: {response.status_code} - {response.text}")
-            return False, None
-    except Exception as e:
-        logger.error(f"Excepción al descontar créditos: {e}")
-        return False, None
+    """Sin sistema de créditos - no hace nada."""
+    return True, 999  # success, newCredits
 
 
 
