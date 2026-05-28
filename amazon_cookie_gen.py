@@ -1315,7 +1315,7 @@ async def get_grizzly_number(country_code, service='am'):
         'action': 'getNumberV2',
         'service': service,
         'country': country_num,
-        'maxPrice': 0.10
+        'maxPrice': 0.05
     }
     
     try:
