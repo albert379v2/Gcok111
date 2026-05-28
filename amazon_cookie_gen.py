@@ -227,9 +227,20 @@ def is_service_enabled():
 # ===================================================================
 
 def test_proxy(proxy_url, max_retries=3):
-    """Prueba la conectividad del proxy y retorna la IP pública, con reintentos."""
+    """Prueba la conectividad del proxy. Soporta HTTP, HTTPS, SOCKS5."""
     session = requests.Session()
-    if proxy_url:
+    
+    # Para SOCKS5, usar socks5h:// (resolución DNS remota) si es necesario
+    if proxy_url and proxy_url.startswith('socks5://'):
+        # Verificar si PySocks está disponible
+        try:
+            import socks  # PySocks
+            session.proxies = {'http': proxy_url, 'https': proxy_url}
+        except ImportError:
+            logger.warning("⚠️ PySocks no instalado, saltando test de proxy con requests")
+            # Fallback: asumir que funciona y dejar que Playwright lo maneje
+            return True, "SOCKS5 (sin verificar)"
+    elif proxy_url:
         session.proxies = {'http': proxy_url, 'https': proxy_url}
 
     for attempt in range(max_retries):
@@ -250,6 +261,7 @@ def test_proxy(proxy_url, max_retries=3):
             logger.warning(f"   Intento {attempt+1}: Error: {e}")
         time.sleep(2)
     return False, "Max retries exceeded"
+
 
 def get_str(string, start, end, occurrence=1):
     """Extrae texto entre dos cadenas."""
