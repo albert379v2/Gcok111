@@ -962,8 +962,9 @@ async def solve_coordinate_captcha(page, step_name="coordinate", round_num=1):
     for point in best_points:
         abs_x = box['x'] + point['x']
         abs_y = box['y'] + point['y']
+        await page.mouse.move(abs_x + random(-10,10), abs_y + random(-10,10))
+        await asyncio.sleep(random.uniform(0.5, 2.0))
         await page.mouse.click(abs_x, abs_y)
-        await asyncio.sleep(0.2)
 
     confirm_btn = await page.query_selector('button:has-text("Confirmar"), input[value="Confirmar"], button[type="submit"]')
     if confirm_btn:
